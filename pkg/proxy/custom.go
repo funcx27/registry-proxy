@@ -166,7 +166,12 @@ func imageHandler(r *http.Request, serverAddr string) {
 		return
 	}
 	imagePath := strings.TrimPrefix(r.URL.Path, "/v2")
-	image := host + strings.ReplaceAll(imagePath, "/manifests/", ":")
+	// 只替换最后一次 /manifests/（API 端点），避免替换 repository 路径中同名段
+	lastIdx := strings.LastIndex(imagePath, "/manifests/")
+	if lastIdx == -1 {
+		return
+	}
+	image := host + imagePath[:lastIdx] + ":" + imagePath[lastIdx+len("/manifests/"):]
 	imageArrary := strings.Split(image, "/")
 	if imageArrary[1] == "library" {
 		imageArrary[0] = getEnv(registryMirrorKey)

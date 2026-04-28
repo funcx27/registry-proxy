@@ -1,4 +1,4 @@
-FROM alpine:latest
+FROM docker.io/library/alpine:latest
 ARG TARGETARCH
 RUN apk add --no-cache ca-certificates tzdata
 COPY config.yml /etc/distribution/config.yml

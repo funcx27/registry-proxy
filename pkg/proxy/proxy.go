@@ -9,8 +9,9 @@ import (
 
 func preprocessMiddleware(proxyAddr string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		urlArrary := strings.Split(r.URL.Path, "/")
-		if len(urlArrary) > 2 && urlArrary[len(urlArrary)-2] == "manifests" {
+		// 匹配 /v2/<name>/manifests/<reference>，用 LastIndex 避免镜像名含 "manifests" 段时误判
+		p := r.URL.Path
+		if idx := strings.LastIndex(p, "/manifests/"); idx != -1 && strings.HasPrefix(p, "/v2/") {
 			manifestDispatcherCustom(proxyAddr, r)
 		}
 		next.ServeHTTP(w, r)

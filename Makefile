@@ -5,9 +5,9 @@ amd64:
 	docker build --load -t registry.aliyuncs.com/funcx27/registry:3  -f Dockerfile bin
 	#  gzip bin/registry-amd64
 arm64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build  -tags "containers_image_openpgp exclude_graphdriver_btrfs containers_image_openpgp" -o bin/registry-arm64  cmd/registry/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build  -tags "containers_image_openpgp exclude_graphdriver_btrfs containers_image_openpgp" -o bin/registry-arm64 main.go
 push: amd64 arm64
-	$(DOCKER_BUILD) -t registry.aliyuncs.com/funcx27/registry:3  -f Dockerfile-new bin
+	$(DOCKER_BUILD) -t registry.aliyuncs.com/funcx27/registry:3  -f Dockerfile bin
 	# skopeo copy docker://registry.aliyuncs.com/funcx27/registry:3 docker://ghcr.io/funcx27/registry:3 --all
 test: amd64
 	docker rm -f test; docker run --name test -e DOCKERHUB_MIRROR=registry.dockermirror.com -d -p80:80 registry.aliyuncs.com/funcx27/registry:3
