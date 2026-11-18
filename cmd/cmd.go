@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"os"
 	"registry-proxy/pkg/proxy"
+	"registry-proxy/pkg/version"
 
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/registry"
-	"github.com/distribution/distribution/v3/version"
 	"github.com/docker/go-metrics"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -23,7 +23,7 @@ var ServeCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// setup context
 		type versionKey struct{}
-		ctx := context.WithValue(context.Background(), versionKey{}, version.Version())
+		ctx := context.WithValue(context.Background(), versionKey{}, version.Version)
 		config, err := resolveConfiguration(args)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)

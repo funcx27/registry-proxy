@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - "v[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
     branches:
       - "v[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 permissions:
@@ -43,19 +45,25 @@ jobs:
           set -euo pipefail
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
+            project_version="${GITHUB_REF_NAME#v}"
+            image_version="${project_version}"
           else
             branch="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
-            if [[ ! "${branch}" =~ ^v[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Image builds must run from a v<major>.<minor> branch or a v<major>.<minor>.<patch> tag"
+            if [[ ! "${branch}" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "::error::Image builds must run from a v<major>.<minor>[.<patch>] branch or a v<major>.<minor>.<patch> tag"
               exit 1
             fi
-            version="${branch#v}.0-dev.${GITHUB_SHA::12}"
+            project_version="${branch#v}"
+            if [[ "${branch}" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+              project_version="${project_version}.0"
+            fi
+            image_version="${project_version}-dev.${GITHUB_SHA::12}"
           fi
 
           distribution_version="$(go list -m -f '{{.Version}}' github.com/distribution/distribution/v3)"
           {
-            echo "image_version=${version}"
+            echo "project_version=${project_version}"
+            echo "image_version=${image_version}"
             echo "distribution_version=${distribution_version#v}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -63,23 +71,34 @@ jobs:
         run: go test -tags="containers_image_openpgp exclude_graphdriver_btrfs" ./...
 
       - name: Build binaries
+        env:
+          PROJECT_VERSION: ${{ steps.metadata.outputs.project_version }}
+          DISTRIBUTION_VERSION: ${{ steps.metadata.outputs.distribution_version }}
+          GIT_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
 
           mkdir -p bin dist
           cp config.yml bin/config.yml
 
+          ldflags="-s -w \
+            -X registry-proxy/pkg/version.Version=${PROJECT_VERSION} \
+            -X registry-proxy/pkg/version.Revision=${GIT_REVISION} \
+            -X registry-proxy/pkg/version.DistributionVersion=${DISTRIBUTION_VERSION}"
+
           go build \
             -trimpath \
-            -ldflags="-s -w" \
+            -ldflags="${ldflags}" \
             -tags="containers_image_openpgp exclude_graphdriver_btrfs" \
             -o bin/registry-amd64 .
 
           GOOS=linux GOARCH=arm64 go build \
             -trimpath \
-            -ldflags="-s -w" \
+            -ldflags="${ldflags}" \
             -tags="containers_image_openpgp exclude_graphdriver_btrfs" \
             -o bin/registry-arm64 .
+
+          ./bin/registry-amd64 --version
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

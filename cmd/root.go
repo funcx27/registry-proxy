@@ -1,7 +1,8 @@
 package cmd
 
 import (
-	"github.com/distribution/distribution/v3/version"
+	"registry-proxy/pkg/version"
+
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,7 @@ var RootCmd = &cobra.Command{
 	Long:  "`registry`",
 	Run: func(cmd *cobra.Command, args []string) {
 		if showVersion {
-			version.PrintVersion()
+			version.Print()
 			return
 		}
 		// nolint:errcheck
