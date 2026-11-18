@@ -19,7 +19,6 @@ arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -tags "containers_image_openpgp exclude_graphdriver_btrfs" -o bin/registry-arm64 main.go
 push: amd64 arm64
 	$(DOCKER_BUILD) -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
-	# skopeo copy docker://$(IMAGE_REPO):$(VERSION) docker://ghcr.io/funcx27/registry:$(VERSION) --all
 test: amd64
 	docker rm -f test; docker run --name test -e DOCKERHUB_MIRROR=registry.dockermirror.com -d -p80:80 $(IMAGE_REPO):$(VERSION)
 	docker logs -f test
