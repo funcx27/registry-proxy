@@ -3,8 +3,10 @@ name: Build Image
 on:
   push:
     branches:
-      - main
+      - "v*"
   pull_request:
+    branches:
+      - "v*"
   workflow_dispatch:
 
 permissions:
