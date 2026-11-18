@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -72,22 +73,63 @@ func init() {
 		log.Printf("image clean before: %s\n", imageCleanBefore)
 		log.Printf("image clean retain tag nums: %s\n", getEnv(imageCleanTagRetainNumsKey))
 	}
+}
 
+// PrePullImages copies the images from IMAGE_LIST_FILE into the local registry.
+// It must run after the internal registry address has been selected.
+func PrePullImages(registryAddr string) {
 	imageListFile := getEnv(imagePrePullListKey)
-	_, err := os.Stat("/var/lib/registry/.done")
-	if imageListFile != "" && err != nil {
-		go func() {
-			log.Printf("copying image from list file: %s\n", imageListFile)
-			err := cmd.ImageSync("registry://127.0.0.1"+getEnv("REGISTRY_HTTP_ADDR"), imageListFile)
-			if err != nil {
-				log.Println(err)
-			} else {
-				f, _ := os.Create("/var/lib/registry/.done")
-				defer f.Close()
-				log.Printf("copying image from list file done")
-			}
-		}()
+	if imageListFile == "" {
+		return
 	}
+	if _, err := os.Stat("/var/lib/registry/.done"); err == nil {
+		return
+	}
+
+	go func() {
+		if err := waitForRegistry(registryAddr, 30*time.Second); err != nil {
+			log.Printf("wait for internal registry: %v", err)
+			return
+		}
+		log.Printf("copying image from list file: %s\n", imageListFile)
+		err := cmd.ImageSync(registryURL(registryAddr), imageListFile)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		f, err := os.Create("/var/lib/registry/.done")
+		if err != nil {
+			log.Printf("create prepull done marker: %v", err)
+			return
+		}
+		if err := f.Close(); err != nil {
+			log.Printf("close prepull done marker: %v", err)
+			return
+		}
+		log.Printf("copying image from list file done")
+	}()
+}
+
+func waitForRegistry(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func registryURL(registryAddr string) string {
+	return (&url.URL{Scheme: "registry", Host: registryAddr}).String()
 }
 
 func CleanImage(ctx context.Context, config *configuration.Configuration) error {
@@ -134,12 +176,12 @@ func CleanImage(ctx context.Context, config *configuration.Configuration) error 
 	return nil
 }
 
-func manifestDispatcherCustom(proxyAddr string, r *http.Request) http.Handler {
+func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler {
 	switch getEnv(imageCopyModekey) {
 	case "sync":
-		imageHandler(r, proxyAddr)
+		imageHandler(r, registryAddr)
 	case "async":
-		go imageHandler(r, proxyAddr)
+		go imageHandler(r, registryAddr)
 	}
 	return nil
 }
@@ -182,7 +224,7 @@ func imageHandler(r *http.Request, serverAddr string) {
 		imageCache.SetDefault(image, "pulling")
 		beginTime := time.Now()
 		log.Println(r.RemoteAddr, "pulling image:", image)
-		err := cmd.ImageSync("registry://127.0.0.1"+serverAddr, image)
+		err := cmd.ImageSync(registryURL(serverAddr), image)
 		if err != nil {
 			imageCache.Delete(image)
 			log.Println(err)
