@@ -44,6 +44,14 @@ var ServeCmd = &cobra.Command{
 		config.HTTP.Addr = registryAddr
 		logrus.Infof("proxy listening on %s, internal registry on %s", proxyAddr, registryAddr)
 
+		// Distribution's maintenance.readonly setting is read when the app is
+		// constructed and cannot be toggled at runtime. Use a handler gate so
+		// CleanImage can enter a read-only maintenance window without restarting.
+		maintenanceGate := proxy.NewMaintenanceGate()
+		registry.RegisterHandler(func(_ *configuration.Configuration, handler http.Handler) http.Handler {
+			return maintenanceGate.Wrap(handler)
+		})
+
 		reg, err := registry.NewRegistry(ctx, config)
 		if err != nil {
 			logrus.Fatalln(err)
@@ -60,12 +68,17 @@ var ServeCmd = &cobra.Command{
 			registryErr <- reg.ListenAndServe()
 		}()
 
+		prePullDone := proxy.PrePullImages(registryAddr)
 		go func() {
-			if err := proxy.CleanImage(ctx, config); err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-prePullDone:
+			}
+			if err := proxy.CleanImage(ctx, config, maintenanceGate); err != nil {
 				logrus.Errorf("image cleanup stopped: %v", err)
 			}
 		}()
-		proxy.PrePullImages(registryAddr)
 
 		select {
 		case err := <-proxyErr:

@@ -76,17 +76,22 @@ func init() {
 }
 
 // PrePullImages copies the images from IMAGE_LIST_FILE into the local registry.
-// It must run after the internal registry address has been selected.
-func PrePullImages(registryAddr string) {
+// It must run after the internal registry address has been selected. The
+// returned channel is closed when the prepull job has finished or skipped.
+func PrePullImages(registryAddr string) <-chan struct{} {
+	done := make(chan struct{})
 	imageListFile := getEnv(imagePrePullListKey)
 	if imageListFile == "" {
-		return
+		close(done)
+		return done
 	}
 	if _, err := os.Stat("/var/lib/registry/.done"); err == nil {
-		return
+		close(done)
+		return done
 	}
 
 	go func() {
+		defer close(done)
 		if err := waitForRegistry(registryAddr, 30*time.Second); err != nil {
 			log.Printf("wait for internal registry: %v", err)
 			return
@@ -109,6 +114,7 @@ func PrePullImages(registryAddr string) {
 		}
 		log.Printf("copying image from list file done")
 	}()
+	return done
 }
 
 func waitForRegistry(addr string, timeout time.Duration) error {
@@ -132,48 +138,74 @@ func registryURL(registryAddr string) string {
 	return (&url.URL{Scheme: "registry", Host: registryAddr}).String()
 }
 
-func CleanImage(ctx context.Context, config *configuration.Configuration) error {
+func CleanImage(ctx context.Context, config *configuration.Configuration, gate *MaintenanceGate) error {
 	imageTagRetainStr := getEnv(imageCleanTagRetainNumsKey)
 	if imageTagRetainStr == "" {
 		return nil
+	}
+	if gate == nil {
+		return fmt.Errorf("maintenance gate is nil")
 	}
 	imageTagRetainNums, err := strconv.Atoi(imageTagRetainStr)
 	if err != nil {
 		return err
 	}
+	if imageTagRetainNums < 0 {
+		return fmt.Errorf("image tag retain nums must not be negative")
+	}
 	interval, err := time.ParseDuration(getEnv(imageCleanJobIntervalKey))
 	if err != nil {
-		log.Fatal("image clean job err:", err)
+		return fmt.Errorf("parse image clean interval: %w", err)
 	}
-	cleanJob := func() {
-		log.Println("image clean job started")
-		var DeletedPath []string
-		for _, project := range projects {
-			deletes, _ := deleteImageTagPath(config, project, imageTagRetainNums, imageCleanBefore, false)
-			DeletedPath = append(DeletedPath, deletes...)
-		}
-		if len(DeletedPath) == 0 {
-			log.Println("no images to clean")
-			return
-		} else {
-			log.Println("image tags deleted")
-		}
-		time.Sleep(time.Second * 5)
-		garbageCollect(ctx, *config)
-		// storage.MarkAndSweep(app.Context, app.driver, app.registry, storage.GCOpts{DryRun: false, RemoveUntagged: true})
-		// cacheProvider := memorycache.NewInMemoryBlobDescriptorCacheProvider(memorycache.DefaultSize)
-		// options := registrymiddleware.GetRegistryOptions()
-		// localOptions := append(options, storage.BlobDescriptorCacheProvider(cacheProvider))
-		// app.registry, _ = storage.NewRegistry(app, app.driver, localOptions...)
-		log.Printf("image cleaned nums: %d", len(DeletedPath))
+	if interval <= 0 {
+		return fmt.Errorf("image clean interval must be positive")
 	}
-	cleanJob()
+
+	cleanJob := func() error {
+		return gate.RunExclusive(ctx, func() error {
+			log.Println("image clean maintenance window started")
+			defer log.Println("image clean maintenance window ended")
+			log.Println("image clean job started")
+			var deletedPaths []string
+			for _, project := range projects {
+				deletes, err := deleteImageTagPath(config, project, imageTagRetainNums, imageCleanBefore, false)
+				if err != nil {
+					if os.IsNotExist(err) {
+						continue
+					}
+					return fmt.Errorf("clean project %q: %w", project, err)
+				}
+				deletedPaths = append(deletedPaths, deletes...)
+			}
+			if len(deletedPaths) == 0 {
+				log.Println("no images to clean")
+				return nil
+			}
+
+			log.Printf("image tags deleted: %d", len(deletedPaths))
+			if err := garbageCollect(ctx, *config); err != nil {
+				return err
+			}
+			log.Printf("image cleaned nums: %d", len(deletedPaths))
+			return nil
+		})
+	}
+
+	if err := cleanJob(); err != nil {
+		log.Printf("image clean job failed: %v", err)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		cleanJob()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := cleanJob(); err != nil {
+				log.Printf("image clean job failed: %v", err)
+			}
+		}
 	}
-	return nil
 }
 
 func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler {
@@ -258,7 +290,10 @@ func imageHandler(r *http.Request, serverAddr string) {
 }
 
 func deleteImageTagPath(config *configuration.Configuration, project string, retain int, deleteBefore time.Duration, dryRun bool) (preDeletePath []string, err error) {
-	rootDir := config.Storage.Parameters()["rootdirectory"].(string)
+	rootDir, ok := config.Storage.Parameters()["rootdirectory"].(string)
+	if !ok || rootDir == "" {
+		return nil, fmt.Errorf("filesystem storage rootdirectory is not configured")
+	}
 	reposPath := path.Join(rootDir, "docker/registry/v2/repositories")
 	projectPath := path.Join(reposPath, project)
 	type tagTime struct {
@@ -311,7 +346,9 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 		return
 	}
 	for _, p := range preDeletePath {
-		os.RemoveAll(p)
+		if err := os.RemoveAll(p); err != nil {
+			return preDeletePath, fmt.Errorf("remove tag path %s: %w", p, err)
+		}
 	}
 	return
 }
@@ -346,24 +383,22 @@ func proxyHostMapping(host string) string {
 	return host
 }
 
-func garbageCollect(ctx context.Context, config configuration.Configuration) {
+func garbageCollect(ctx context.Context, config configuration.Configuration) error {
 	driver, err := factory.Create(ctx, config.Storage.Type(), config.Storage.Parameters())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to construct %s driver: %v", config.Storage.Type(), err)
-		os.Exit(1)
+		return fmt.Errorf("construct %s driver: %w", config.Storage.Type(), err)
 	}
 
 	registry, err := storage.NewRegistry(ctx, driver)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to construct registry: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("construct registry: %w", err)
 	}
 	err = storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{
 		DryRun:         false,
 		RemoveUntagged: true,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to garbage collect: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("garbage collect: %w", err)
 	}
+	return nil
 }
