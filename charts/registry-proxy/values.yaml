@@ -1,0 +1,216 @@
+replicaCount: 1
+
+image:
+  # Image produced by the build-image workflow.
+  repository: ghcr.io/funcx27/registry-proxy
+  # Defaults to Chart.appVersion when empty.
+  tag: ""
+  # When set, takes precedence over tag, for example sha256:...
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Secrets used by kubelet to pull the registry-proxy image itself.
+# Example:
+# imagePullSecrets:
+#   - name: private-registry-credentials
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  # Optional fixed ClusterIP, useful when /etc/hosts entries must remain stable.
+  # The address must be unused and inside the cluster service CIDR.
+  # clusterIP is immutable after the Service is created; changing it requires
+  # deleting and recreating the Service.
+  clusterIP: ""
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: registry.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # tls:
+  #   - secretName: registry-proxy-tls
+  #     hosts:
+  #       - registry.example.com
+
+persistence:
+  # Storage backend for /var/lib/registry:
+  #   hostPath - data lives on the node, easy to inspect and back up.
+  #   pvc      - Kubernetes PersistentVolumeClaim, recommended for multi-node clusters.
+  #   emptyDir - ephemeral data, deleted when the pod is removed.
+  type: hostPath
+
+  hostPath:
+    # The registry writes to /var/lib/registry inside the container; this path is
+    # the corresponding directory on the host. It must be absolute. Use a unique
+    # path for each release when running multiple instances on the same node.
+    path: /var/lib/registry-proxy
+    type: DirectoryOrCreate
+
+  # Used when type=pvc. Set to an existing claim to skip PVC creation.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 20Gi
+  annotations: {}
+
+# Upstream registry credentials used by skopeo while proxying private images.
+#
+# The selected Secret must contain a Docker config JSON document. It is mounted
+# read-only and REGISTRY_AUTH_FILE is pointed at the selected key, so skopeo can
+# authenticate to every upstream registry listed under "auths".
+#
+# For production, prefer an existing Secret managed by an external secret store.
+# For convenience, register one or more registries below with username/password;
+# the chart renders them into a Docker config JSON Secret.
+#
+# When existingSecret is set, it takes precedence and no Secret is generated.
+# Otherwise configure only one of registries, dockerconfigjson, or
+# dockerConfigFile.
+upstreamAuth:
+  enabled: false
+  # Existing Secret containing Docker config JSON under the standard
+  # .dockerconfigjson key. When set, no Secret is generated and the other
+  # credential inputs are ignored.
+  existingSecret: ""
+  # Directory where the Secret is mounted. REGISTRY_AUTH_FILE points at
+  # <mountPath>/.dockerconfigjson.
+  mountPath: /etc/registry-proxy/auth
+  # Convenient values-based credentials. The map key is the registry server
+  # exactly as it should appear in Docker config, for example:
+  #
+  # registries:
+  #   registry.example.com:
+  #     username: robot
+  #     password: secret
+  #
+  # For Docker Hub, use https://index.docker.io/v1/ as the key.
+  registries: {}
+  # Optional raw Docker config JSON used to create the Secret when existingSecret
+  # and registries are empty. Supply it from a file:
+  #
+  #   --set-file upstreamAuth.dockerconfigjson=$HOME/.docker/config.json
+  #
+  dockerconfigjson: ""
+  # Optional path to a Docker config JSON file packaged inside the chart, for
+  # example files/config.json. Helm's .Files.Get can only read files inside the
+  # chart package, not arbitrary paths on the host.
+  #
+  # The file is embedded in the chart archive. Use this only for CI or
+  # non-sensitive environments; do not commit real credentials or publish a
+  # chart containing them.
+  dockerConfigFile: ""
+
+# Optional upstream host rewrite rules, written to /var/lib/registry/proxy-mapping.yaml.
+# Example:
+# config:
+#   proxyMapping:
+#     docker.io: registry.dockermirror.com
+config:
+  proxyMapping: {}
+  # Mount an existing ConfigMap instead of generating one. It must contain the
+  # proxy-mapping.yaml key.
+  existingProxyMappingConfigMap: ""
+
+# Optional image list copied into the local registry at startup.
+prePull:
+  enabled: false
+  # Mount an existing ConfigMap instead of generating one. It must contain fileName.
+  existingConfigMap: ""
+  fileName: images.txt
+  images: []
+  # images:
+  #   - docker.io/library/nginx:1.27
+  #   - ghcr.io/example/app:v1
+
+# Optional tag cleanup job executed by the application.
+imageClean:
+  enabled: false
+  interval: 12h
+  retainTags: 2
+  # Comma-separated list of top-level repository namespaces to clean.
+  project: test
+  beforeDays: 1
+
+env:
+  timezone: Asia/Shanghai
+  logLevel: error
+  dockerHubMirror: ""
+  imageCopyMode: sync
+  imagePullTimeout: 5m
+  imageRepullMinInterval: 5m
+  # Extra environment variables. Each item supports the normal Kubernetes env form.
+  extra: []
+
+# Recreate avoids two pods competing for a ReadWriteOnce data volume.
+deploymentStrategy:
+  type: Recreate
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /v2/
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /v2/
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  enabled: true
+  httpGet:
+    path: /v2/
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 24
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+terminationGracePeriodSeconds: 30
+
+extraVolumes: []
+extraVolumeMounts: []

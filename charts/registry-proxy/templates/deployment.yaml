@@ -1,0 +1,193 @@
+{{- if and .Values.prePull.enabled (not .Values.prePull.existingConfigMap) (not .Values.prePull.images) -}}
+{{- fail "prePull.images is required when prePull.enabled=true and prePull.existingConfigMap is empty" -}}
+{{- end -}}
+{{- if not (has .Values.persistence.type (list "hostPath" "pvc" "emptyDir")) -}}
+{{- fail "persistence.type must be one of hostPath, pvc, emptyDir" -}}
+{{- end -}}
+{{- if eq .Values.persistence.type "hostPath" -}}
+{{- if not .Values.persistence.hostPath.path -}}
+{{- fail "persistence.hostPath.path is required when persistence.type=hostPath" -}}
+{{- end -}}
+{{- if not (hasPrefix "/" .Values.persistence.hostPath.path) -}}
+{{- fail "persistence.hostPath.path must be an absolute path" -}}
+{{- end -}}
+{{- if not (has .Values.persistence.hostPath.type (list "DirectoryOrCreate" "Directory")) -}}
+{{- fail "persistence.hostPath.type must be DirectoryOrCreate or Directory" -}}
+{{- end -}}
+{{- end -}}
+{{- $podAnnotations := deepCopy (default (dict) .Values.podAnnotations) -}}
+{{- if and .Values.upstreamAuth.enabled (not .Values.upstreamAuth.existingSecret) -}}
+{{- $_ := set $podAnnotations "checksum/upstream-auth" (include (print $.Template.BasePath "/secret-upstream-auth.yaml") . | sha256sum) -}}
+{{- end -}}
+{{- if or .Values.config.proxyMapping (and .Values.prePull.enabled (not .Values.prePull.existingConfigMap)) -}}
+{{- $_ := set $podAnnotations "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum) -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "registry-proxy.fullname" . }}
+  labels:
+    {{- include "registry-proxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.deploymentStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "registry-proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with $podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "registry-proxy.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "registry-proxy.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      containers:
+        - name: registry-proxy
+          image: {{ include "registry-proxy.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.env.timezone | quote }}
+            - name: REGISTRY_LOG_LEVEL
+              value: {{ .Values.env.logLevel | quote }}
+            - name: IMAGE_COPY_MODE
+              value: {{ .Values.env.imageCopyMode | quote }}
+            - name: IMAGE_PULL_TIMEOUT
+              value: {{ .Values.env.imagePullTimeout | quote }}
+            - name: IMAGE_REPULL_MIN_INTERVAL
+              value: {{ .Values.env.imageRepullMinInterval | quote }}
+            {{- if .Values.env.dockerHubMirror }}
+            - name: DOCKERHUB_MIRROR
+              value: {{ .Values.env.dockerHubMirror | quote }}
+            {{- end }}
+            {{- if .Values.upstreamAuth.enabled }}
+            - name: REGISTRY_AUTH_FILE
+              value: {{ include "registry-proxy.upstreamAuthFile" . | quote }}
+            {{- end }}
+            {{- if .Values.prePull.enabled }}
+            - name: IMAGE_LIST_FILE
+              value: {{ printf "/etc/registry-proxy/prepull/%s" .Values.prePull.fileName | quote }}
+            {{- end }}
+            - name: IMAGE_CLEAN_TAG_RETAIN_NUMS
+              {{- if .Values.imageClean.enabled }}
+              value: {{ .Values.imageClean.retainTags | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
+            {{- if .Values.imageClean.enabled }}
+            - name: IMAGE_CLEAN_INTERVAL
+              value: {{ .Values.imageClean.interval | quote }}
+            - name: IMAGE_CLEAN_PROJECT
+              value: {{ .Values.imageClean.project | quote }}
+            - name: IMAGE_CLEAN_BEFORE_DAYS
+              value: {{ .Values.imageClean.beforeDays | quote }}
+            {{- end }}
+            {{- with .Values.env.extra }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- omit .Values.livenessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- omit .Values.startupProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+            {{- if .Values.upstreamAuth.enabled }}
+            - name: upstream-auth
+              mountPath: {{ .Values.upstreamAuth.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if or .Values.config.proxyMapping .Values.config.existingProxyMappingConfigMap }}
+            - name: proxy-mapping
+              mountPath: /var/lib/registry/proxy-mapping.yaml
+              subPath: proxy-mapping.yaml
+              readOnly: true
+            {{- end }}
+            {{- if .Values.prePull.enabled }}
+            - name: prepull
+              mountPath: /etc/registry-proxy/prepull
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if eq .Values.persistence.type "hostPath" }}
+          hostPath:
+            path: {{ .Values.persistence.hostPath.path | quote }}
+            type: {{ .Values.persistence.hostPath.type | quote }}
+          {{- else if eq .Values.persistence.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "registry-proxy.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.upstreamAuth.enabled }}
+        - name: upstream-auth
+          secret:
+            secretName: {{ include "registry-proxy.upstreamAuthSecretName" . }}
+            defaultMode: 0444
+        {{- end }}
+        {{- if or .Values.config.proxyMapping .Values.config.existingProxyMappingConfigMap }}
+        - name: proxy-mapping
+          configMap:
+            name: {{ include "registry-proxy.proxyMappingConfigMapName" . }}
+        {{- end }}
+        {{- if .Values.prePull.enabled }}
+        - name: prepull
+          configMap:
+            name: {{ include "registry-proxy.prePullConfigMapName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

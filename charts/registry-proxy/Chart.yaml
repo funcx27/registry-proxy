@@ -1,0 +1,14 @@
+apiVersion: v2
+name: registry-proxy
+description: Docker registry proxy with on-demand upstream image caching
+type: application
+version: 0.1.0
+appVersion: "1.0.1"
+home: https://github.com/funcx27/registry-proxy
+sources:
+  - https://github.com/funcx27/registry-proxy
+keywords:
+  - registry
+  - proxy
+  - docker
+  - oci

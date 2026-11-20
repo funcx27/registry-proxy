@@ -1,4 +1,4 @@
-name: Build Image
+name: Build and Release
 
 on:
   push:
@@ -151,3 +151,98 @@ jobs:
           path: dist/registry-proxy-oci.tar
           if-no-files-found: error
           retention-days: 7
+
+  chart:
+    name: Lint and package Helm chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      chart_version: ${{ steps.metadata.outputs.chart_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Resolve chart version
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chart_version="$(awk '$1 == "version:" { print $2; exit }' charts/registry-proxy/Chart.yaml)"
+          app_version="$(awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2; exit }' charts/registry-proxy/Chart.yaml)"
+
+          # Release charts use the application tag, so the asset name and
+          # appVersion stay aligned with the published container image.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            chart_version="${GITHUB_REF_NAME#v}"
+            app_version="${chart_version}"
+          fi
+
+          {
+            echo "chart_version=${chart_version}"
+            echo "app_version=${app_version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Lint and package chart
+        env:
+          CHART_VERSION: ${{ steps.metadata.outputs.chart_version }}
+          CHART_APP_VERSION: ${{ steps.metadata.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          make chart-package
+
+          chart_package="dist/registry-proxy-${CHART_VERSION}.tgz"
+          test -f "${chart_package}"
+
+          # The CI fixtures contain sample credentials and must never ship.
+          if tar -tzf "${chart_package}" | grep -q '/ci/'; then
+            echo "::error::chart package unexpectedly contains ci/ fixtures"
+            exit 1
+          fi
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-proxy-chart-${{ steps.metadata.outputs.chart_version }}
+          path: dist/registry-proxy-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  chart-publish:
+    name: Publish Helm chart to GHCR
+    if: github.ref_type == 'tag'
+    needs: chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download chart artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-proxy-chart-${{ needs.chart.outputs.chart_version }}
+          path: dist
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push chart as OCI artifact
+        env:
+          CHART_VERSION: ${{ needs.chart.outputs.chart_version }}
+        run: |
+          set -euo pipefail
+          chart_package="dist/registry-proxy-${CHART_VERSION}.tgz"
+          chart_repository="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          helm push "${chart_package}" "${chart_repository}"

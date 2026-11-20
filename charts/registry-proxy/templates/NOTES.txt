@@ -1,0 +1,49 @@
+registry-proxy has been deployed.
+
+Check the pod status with:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Registry API inside the cluster:
+  http://{{ include "registry-proxy.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v2/
+
+Port-forward the API for local checks:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "registry-proxy.fullname" . }} 5000:{{ .Values.service.port }}
+  curl http://127.0.0.1:5000/v2/
+
+{{- if eq .Values.persistence.type "hostPath" }}
+Registry data is stored on the node at:
+  {{ .Values.persistence.hostPath.path }}
+This is node-local. Pin the pod to the intended node if the data must follow it.
+{{- else if eq .Values.persistence.type "pvc" }}
+Registry data is stored in a PersistentVolumeClaim:
+  {{ default (include "registry-proxy.fullname" .) .Values.persistence.existingClaim }}
+{{- else }}
+Registry data is stored in an emptyDir and will be lost when the pod is removed.
+{{- end }}
+
+The proxy chooses the upstream registry from the Docker request Host header.
+Route the upstream hostname (or a mapped hostname from config.proxyMapping) to
+this Service with DNS or an Ingress. Do not point the upstream hostname back at
+the proxy without a proxyMapping entry, or the proxy will loop.
+
+{{- if .Values.env.dockerHubMirror }}
+Docker Hub mirror is enabled ({{ .Values.env.dockerHubMirror }}).
+For a local test through the port-forward, use the service IP form so the
+library-image mirror path is selected:
+  docker pull 127.0.0.1:5000/library/nginx:latest
+{{- end }}
+
+{{- if .Values.upstreamAuth.enabled }}
+
+Upstream credentials are enabled.
+  Secret:  {{ include "registry-proxy.upstreamAuthSecretName" . }}
+  Key:     .dockerconfigjson
+  Env:     REGISTRY_AUTH_FILE={{ include "registry-proxy.upstreamAuthFile" . }}
+
+The Secret must contain a Docker config JSON document (for example the output of
+`kubectl create secret docker-registry ...`).
+{{- else }}
+
+Upstream credentials are disabled. Private upstream images will fail to pull
+unless the upstream registries allow anonymous access.
+{{- end }}

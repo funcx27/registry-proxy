@@ -1,0 +1,9 @@
+upstreamAuth:
+  enabled: true
+  registries:
+    registry.example.com:
+      username: robot
+      password: test-password
+    "https://index.docker.io/v1/":
+      username: dockerhub-user
+      password: dockerhub-token
