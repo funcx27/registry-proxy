@@ -401,7 +401,7 @@ workflow artifact, and pushes it to GHCR as an OCI artifact:
 
 ```bash
 helm install registry-proxy oci://ghcr.io/funcx27/charts/registry-proxy \
-  --version 1.0.1 \
+  --version 0.1.0 \
   --namespace registry-proxy \
   --create-namespace
 ```
