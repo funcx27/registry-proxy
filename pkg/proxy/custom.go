@@ -18,10 +18,10 @@ import (
 	"unicode"
 
 	"github.com/distribution/distribution/v3/configuration"
-	"github.com/distribution/distribution/v3/registry/storage"
-	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
 	"github.com/patrickmn/go-cache"
 	"gopkg.in/yaml.v3"
+
+	"registry-proxy/internal/gc"
 )
 
 var (
@@ -145,7 +145,7 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 			}
 
 			log.Printf("image tags deleted: %d", len(deletedPaths))
-			if err := garbageCollect(ctx, *config); err != nil {
+			if err := gc.Run(ctx, *config); err != nil {
 				return err
 			}
 			log.Printf("image cleaned nums: %d", len(deletedPaths))
@@ -359,24 +359,4 @@ func proxyHostMapping(host string) string {
 		return registryProxyMap[host]
 	}
 	return host
-}
-
-func garbageCollect(ctx context.Context, config configuration.Configuration) error {
-	driver, err := factory.Create(ctx, config.Storage.Type(), config.Storage.Parameters())
-	if err != nil {
-		return fmt.Errorf("construct %s driver: %w", config.Storage.Type(), err)
-	}
-
-	registry, err := storage.NewRegistry(ctx, driver)
-	if err != nil {
-		return fmt.Errorf("construct registry: %w", err)
-	}
-	err = storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{
-		DryRun:         false,
-		RemoveUntagged: true,
-	})
-	if err != nil {
-		return fmt.Errorf("garbage collect: %w", err)
-	}
-	return nil
 }

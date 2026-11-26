@@ -33,4 +33,8 @@ Covered scenarios:
   and layers, leaving other architectures absent;
 - concurrent tag requests perform a single copy;
 - a missing upstream image returns `502`;
-- `IMAGE_PULL_TIMEOUT` expiry returns `504`.
+- `IMAGE_PULL_TIMEOUT` expiry returns `504`;
+- GC keeps a tagged index whose child manifests are not yet copied, and after a
+  lazy child pull it keeps that untagged child and its blobs because they are
+  reachable from the index (it also creates missing `_layers` directories so
+  distribution's sweep does not abort on index-only repositories).
