@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	_ "net/http/pprof"
 	"registry-proxy/cmd"
 
@@ -19,5 +21,7 @@ import (
 )
 
 func main() {
-	cmd.RootCmd.Execute()
+	if err := cmd.RootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
