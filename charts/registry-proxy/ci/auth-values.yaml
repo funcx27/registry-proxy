@@ -5,10 +5,5 @@ config:
   proxyMapping:
     docker.io: registry.dockermirror.com
 
-prePull:
-  enabled: true
-  images:
-    - docker.io/library/nginx:1.27
-
 upstreamAuth:
   enabled: true

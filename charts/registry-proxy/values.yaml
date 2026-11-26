@@ -83,10 +83,10 @@ persistence:
   size: 20Gi
   annotations: {}
 
-# Upstream registry credentials used by skopeo while proxying private images.
+# Upstream registry credentials used by regclient while proxying private images.
 #
 # The selected Secret must contain a Docker config JSON document. It is mounted
-# read-only and REGISTRY_AUTH_FILE is pointed at the selected key, so skopeo can
+# read-only and REGISTRY_AUTH_FILE is pointed at the selected key, so regclient can
 # authenticate to every upstream registry listed under "auths".
 #
 # For production, prefer an existing Secret managed by an external secret store.
@@ -141,17 +141,6 @@ config:
   # proxy-mapping.yaml key.
   existingProxyMappingConfigMap: ""
 
-# Optional image list copied into the local registry at startup.
-prePull:
-  enabled: false
-  # Mount an existing ConfigMap instead of generating one. It must contain fileName.
-  existingConfigMap: ""
-  fileName: images.txt
-  images: []
-  # images:
-  #   - docker.io/library/nginx:1.27
-  #   - ghcr.io/example/app:v1
-
 # Optional tag cleanup job executed by the application.
 imageClean:
   enabled: false
@@ -167,7 +156,7 @@ env:
   dockerHubMirror: ""
   imageCopyMode: sync
   imagePullTimeout: 5m
-  imagePullWorkers: 4
+  imagePullWorkers: 2
   # 0 keeps producers backpressured until a worker is free. Use a small
   # positive value only when bursts should wait in a short in-memory queue.
   imagePullQueueSize: 0

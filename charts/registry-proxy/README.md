@@ -86,7 +86,7 @@ docker pull 127.0.0.1:5000/library/nginx:latest
 
 ## Upstream registry credentials
 
-The application uses skopeo to copy images. When `upstreamAuth.enabled=true`,
+The application uses regclient to copy images. When `upstreamAuth.enabled=true`,
 the chart:
 
 1. mounts a Secret containing Docker config JSON at
@@ -94,7 +94,7 @@ the chart:
 2. sets `REGISTRY_AUTH_FILE` to
    `/etc/registry-proxy/auth/.dockerconfigjson`.
 
-Skopeo reads this file for every proxied pull, so entries for multiple
+regclient reads this file for every proxied pull, so entries for multiple
 registries can live in the same Secret.
 
 ### Convenient: username/password in values
@@ -171,7 +171,7 @@ If your existing Secret uses a different key such as `config.json`, recreate it
 with the standard key rather than adding a chart-specific key setting.
 
 For Docker Hub, use the server key `https://index.docker.io/v1/` in the Docker
-config JSON. This is what `docker login` writes and what skopeo expects.
+config JSON. This is what `docker login` writes and what regclient expects.
 
 ### Optional: create the Secret from a Docker config file
 
@@ -236,7 +236,7 @@ avoid silently ignoring credentials.
 
 ### Pulling the chart image from a private registry
 
-`upstreamAuth` is for upstream image pulls performed by skopeo. To pull the
+`upstreamAuth` is for upstream image pulls performed by regclient. To pull the
 `registry-proxy` container image itself from a private registry, configure
 `imagePullSecrets`:
 
@@ -305,9 +305,8 @@ persistence:
 
 Data is deleted when the pod is removed. This is useful for tests only.
 
-The pre-pull `.done` marker is stored in the same volume. The chart defaults to
-a `Recreate` deployment strategy because a `ReadWriteOnce` volume cannot normally
-be attached to two pods at once. If you use an RWX volume and set `replicaCount`
+The chart defaults to a `Recreate` deployment strategy because a
+`ReadWriteOnce` volume cannot normally be attached to two pods at once. If you use an RWX volume and set `replicaCount`
 above one, change `deploymentStrategy` accordingly.
 
 ## Proxy host mapping
@@ -327,19 +326,6 @@ Or mount an existing ConfigMap containing the `proxy-mapping.yaml` key:
 config:
   existingProxyMappingConfigMap: my-proxy-mapping
 ```
-
-## Pre-pull images
-
-```yaml
-prePull:
-  enabled: true
-  images:
-    - docker.io/library/nginx:1.27
-    - ghcr.io/example/app:v1
-```
-
-The image list is written to a ConfigMap and passed through `IMAGE_LIST_FILE`.
-An existing ConfigMap can be used with `prePull.existingConfigMap`.
 
 ## Image cleanup
 
@@ -377,7 +363,7 @@ imageClean:
 | `env.dockerHubMirror` | `""` | `DOCKERHUB_MIRROR`. |
 | `env.imageCopyMode` | `sync` | `sync` or `async`. |
 | `env.imagePullTimeout` | `5m` | Pull timeout. |
-| `env.imagePullWorkers` | `4` | Number of workers executing image copies. |
+| `env.imagePullWorkers` | `2` | Number of workers executing image copies. |
 | `env.imagePullQueueSize` | `0` | In-memory pull queue size. `0` uses direct worker handoff with backpressure. |
 | `env.imageRepullMinInterval` | `5m` | Minimum re-pull interval. |
 | `env.extra` | `[]` | Additional Kubernetes env entries. |
@@ -387,6 +373,14 @@ In `sync` mode, concurrent manifest requests for the same image are coalesced
 into one copy, and copies run on at most `env.imagePullWorkers` workers. If the
 copy fails or exceeds `env.imagePullTimeout`, the request fails with `502` (or
 `504` on timeout) instead of being forwarded to the local registry.
+
+Multi-platform images use lazy, client-driven copying. A tag request copies
+only the top-level OCI index/manifest list. The child manifest for a specific
+platform, together with its config and layers, is copied when the client
+requests that child digest. There is intentionally no all-platforms mode:
+clients pull only the platform they actually run. The registry configuration
+therefore sets `validation.manifests.indexes.platforms: none` so distribution
+accepts the top-level index before its children are present.
 
 ## Validate the chart
 

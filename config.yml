@@ -25,3 +25,9 @@ health:
     enabled: true
     interval: 10s
     threshold: 3
+validation:
+  manifests:
+    indexes:
+      # Pull-through cache stores the top-level index first and fills child
+      # manifests on demand, so the registry must accept incomplete indexes.
+      platforms: none

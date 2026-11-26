@@ -85,7 +85,7 @@ Name of the Secret holding upstream credentials.
 {{- end }}
 
 {{/*
-Absolute path passed to skopeo through REGISTRY_AUTH_FILE.
+Absolute path passed to regclient through REGISTRY_AUTH_FILE.
 The standard Docker config JSON key is always used.
 */}}
 {{- define "registry-proxy.upstreamAuthFile" -}}
@@ -97,13 +97,6 @@ ConfigMap containing proxy-mapping.yaml.
 */}}
 {{- define "registry-proxy.proxyMappingConfigMapName" -}}
 {{- default (include "registry-proxy.fullname" .) .Values.config.existingProxyMappingConfigMap }}
-{{- end }}
-
-{{/*
-ConfigMap containing the pre-pull image list.
-*/}}
-{{- define "registry-proxy.prePullConfigMapName" -}}
-{{- default (include "registry-proxy.fullname" .) .Values.prePull.existingConfigMap }}
 {{- end }}
 
 {{/*

@@ -27,7 +27,7 @@ func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		atomic.AddInt32(&calls, 1)
 		startOnce.Do(func() { close(started) })
 		<-release
@@ -73,7 +73,7 @@ func TestPullPoolRetriesAfterFailure(t *testing.T) {
 	cache := cache.New(time.Minute, time.Minute)
 
 	var calls int32
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			return errors.New("upstream unavailable")
 		}
@@ -101,7 +101,7 @@ func TestPullPoolSkipsCachedImage(t *testing.T) {
 	cache.SetDefault(image, struct{}{})
 
 	var calls int32
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		atomic.AddInt32(&calls, 1)
 		return nil
 	}
@@ -121,7 +121,7 @@ func TestPullPoolPropagatesPanicAsError(t *testing.T) {
 	ctx := context.Background()
 	cache := cache.New(time.Minute, time.Minute)
 
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		panic("boom")
 	}
 
@@ -149,7 +149,7 @@ func TestPullPoolQueueWaitHonorsContext(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
@@ -194,7 +194,7 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(_ string, _ ...string) error {
+	syncFn := func(context.Context, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
@@ -266,7 +266,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		var startOnce sync.Once
-		syncFn := func(string, ...string) error {
+		syncFn := func(context.Context, string, string) error {
 			atomic.AddInt32(&calls, 1)
 			startOnce.Do(func() { close(started) })
 			<-release
@@ -314,7 +314,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 func TestPullPoolCloseDoesNotStrandCallers(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		pool := newPullPool(context.Background(), 2, 2, cache.New(time.Minute, time.Minute),
-			func(string, ...string) error { return nil })
+			func(context.Context, string, string) error { return nil })
 
 		const callers = 16
 		var wg sync.WaitGroup

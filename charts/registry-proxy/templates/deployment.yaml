@@ -1,6 +1,3 @@
-{{- if and .Values.prePull.enabled (not .Values.prePull.existingConfigMap) (not .Values.prePull.images) -}}
-{{- fail "prePull.images is required when prePull.enabled=true and prePull.existingConfigMap is empty" -}}
-{{- end -}}
 {{- if not (has .Values.persistence.type (list "hostPath" "pvc" "emptyDir")) -}}
 {{- fail "persistence.type must be one of hostPath, pvc, emptyDir" -}}
 {{- end -}}
@@ -19,7 +16,7 @@
 {{- if and .Values.upstreamAuth.enabled (not .Values.upstreamAuth.existingSecret) -}}
 {{- $_ := set $podAnnotations "checksum/upstream-auth" (include (print $.Template.BasePath "/secret-upstream-auth.yaml") . | sha256sum) -}}
 {{- end -}}
-{{- if or .Values.config.proxyMapping (and .Values.prePull.enabled (not .Values.prePull.existingConfigMap)) -}}
+{{- if .Values.config.proxyMapping -}}
 {{- $_ := set $podAnnotations "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum) -}}
 {{- end -}}
 apiVersion: apps/v1
@@ -91,10 +88,6 @@ spec:
             - name: REGISTRY_AUTH_FILE
               value: {{ include "registry-proxy.upstreamAuthFile" . | quote }}
             {{- end }}
-            {{- if .Values.prePull.enabled }}
-            - name: IMAGE_LIST_FILE
-              value: {{ printf "/etc/registry-proxy/prepull/%s" .Values.prePull.fileName | quote }}
-            {{- end }}
             - name: IMAGE_CLEAN_TAG_RETAIN_NUMS
               {{- if .Values.imageClean.enabled }}
               value: {{ .Values.imageClean.retainTags | quote }}
@@ -140,11 +133,6 @@ spec:
               subPath: proxy-mapping.yaml
               readOnly: true
             {{- end }}
-            {{- if .Values.prePull.enabled }}
-            - name: prepull
-              mountPath: /etc/registry-proxy/prepull
-              readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -174,11 +162,6 @@ spec:
         - name: proxy-mapping
           configMap:
             name: {{ include "registry-proxy.proxyMappingConfigMapName" . }}
-        {{- end }}
-        {{- if .Values.prePull.enabled }}
-        - name: prepull
-          configMap:
-            name: {{ include "registry-proxy.prePullConfigMapName" . }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

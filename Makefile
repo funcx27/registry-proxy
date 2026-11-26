@@ -20,18 +20,22 @@ CHART_AUTH_FILE ?= $(CHART_DIR)/ci/dockerconfig.json
 CHART_REGISTRIES_VALUES ?= $(CHART_DIR)/ci/registries-values.yaml
 DOCKER_BUILD = docker build ${DEBUG} --pull --push --builder=mybuilder --platform=linux/arm64,linux/amd64
 amd64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -gcflags="all=-trimpath=${PWD}" -asmflags="all=-trimpath=${PWD}" -tags "containers_image_openpgp exclude_graphdriver_btrfs" -o bin/registry-amd64 main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -gcflags="all=-trimpath=${PWD}" -asmflags="all=-trimpath=${PWD}" -o bin/registry-amd64 main.go
 	docker build --load -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
 	#  gzip bin/registry-amd64
 arm64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -tags "containers_image_openpgp exclude_graphdriver_btrfs" -o bin/registry-arm64 main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o bin/registry-arm64 main.go
 push: amd64 arm64
 	$(DOCKER_BUILD) -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
 test: amd64
 	docker rm -f test; docker run --name test -e DOCKERHUB_MIRROR=registry.dockermirror.com -d -p80:80 $(IMAGE_REPO):$(VERSION)
 	docker logs -f test
 
-.PHONY: chart-lint chart-package chart-push
+E2E_DOCKER_PROXY ?= http://127.0.0.1:10808
+e2e:
+	E2E_DOCKER_PROXY=$(E2E_DOCKER_PROXY) go test -tags=e2e -v -count=1 -timeout=10m ./test/e2e
+
+.PHONY: chart-lint chart-package chart-push e2e
 
 chart-lint:
 	helm lint --strict $(CHART_DIR)

@@ -7,11 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +20,6 @@ import (
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/registry/storage"
 	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
-	"github.com/funcx27/skopeo/cmd/cmd"
 	"github.com/patrickmn/go-cache"
 	"gopkg.in/yaml.v3"
 )
@@ -33,7 +30,6 @@ var (
 	imagePullTimeoutKey        = "IMAGE_PULL_TIMEOUT"
 	imagePullWorkersKey        = "IMAGE_PULL_WORKERS"
 	imagePullQueueSizeKey      = "IMAGE_PULL_QUEUE_SIZE"
-	imagePrePullListKey        = "IMAGE_LIST_FILE"
 	imageCleanJobIntervalKey   = "IMAGE_CLEAN_INTERVAL"
 	imageCleanBeforeDaysKey    = "IMAGE_CLEAN_BEFORE_DAYS"
 	imageCleanTagRetainNumsKey = "IMAGE_CLEAN_TAG_RETAIN_NUMS"
@@ -51,7 +47,7 @@ func init() {
 	rePullInterval := envStrToDuration(imagePullMinIntervalKey)
 	imagePullTimeout = envStrToDuration(imagePullTimeoutKey)
 	imageCache = cache.New(rePullInterval, time.Hour)
-	pullWorkers := envInt(imagePullWorkersKey, 4)
+	pullWorkers := envInt(imagePullWorkersKey, 2)
 	if pullWorkers < 1 {
 		pullWorkers = 1
 	}
@@ -59,7 +55,18 @@ func init() {
 	if pullQueueSize < 0 {
 		pullQueueSize = 0
 	}
-	imagePuller = newPullPool(context.Background(), pullWorkers, pullQueueSize, imageCache, cmd.ImageSync)
+	copier, err := newImageCopier()
+	if err != nil {
+		log.Fatalf("initialize image copier: %v", err)
+	}
+	// Request waits may time out after a job is queued. Bound the copy itself
+	// as well, otherwise a stuck upstream can occupy a worker indefinitely.
+	copyWithTimeout := func(ctx context.Context, registryAddr, image string) error {
+		ctx, cancel := context.WithTimeout(ctx, imagePullTimeout)
+		defer cancel()
+		return copier.Copy(ctx, registryAddr, image)
+	}
+	imagePuller = newPullPool(context.Background(), pullWorkers, pullQueueSize, imageCache, copyWithTimeout)
 	trimmedProjects := strings.TrimFunc(getEnv(imageCleanProjectKey), unicode.IsSpace)
 	projects = strings.Split(trimmedProjects, ",")
 	log.Printf("image re-pull min interval: %s\n", rePullInterval)
@@ -91,69 +98,6 @@ func init() {
 		log.Printf("image clean before: %s\n", imageCleanBefore)
 		log.Printf("image clean retain tag nums: %s\n", getEnv(imageCleanTagRetainNumsKey))
 	}
-}
-
-// PrePullImages copies the images from IMAGE_LIST_FILE into the local registry.
-// It must run after the internal registry address has been selected. The
-// returned channel is closed when the prepull job has finished or skipped.
-func PrePullImages(registryAddr string) <-chan struct{} {
-	done := make(chan struct{})
-	imageListFile := getEnv(imagePrePullListKey)
-	if imageListFile == "" {
-		close(done)
-		return done
-	}
-	if _, err := os.Stat("/var/lib/registry/.done"); err == nil {
-		close(done)
-		return done
-	}
-
-	go func() {
-		defer close(done)
-		if err := waitForRegistry(registryAddr, 30*time.Second); err != nil {
-			log.Printf("wait for internal registry: %v", err)
-			return
-		}
-		log.Printf("copying image from list file: %s\n", imageListFile)
-		err := cmd.ImageSync(registryURL(registryAddr), imageListFile)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		f, err := os.Create("/var/lib/registry/.done")
-		if err != nil {
-			log.Printf("create prepull done marker: %v", err)
-			return
-		}
-		if err := f.Close(); err != nil {
-			log.Printf("close prepull done marker: %v", err)
-			return
-		}
-		log.Printf("copying image from list file done")
-	}()
-	return done
-}
-
-func waitForRegistry(addr string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return lastErr
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func registryURL(registryAddr string) string {
-	return (&url.URL{Scheme: "registry", Host: registryAddr}).String()
 }
 
 func CleanImage(ctx context.Context, config *configuration.Configuration, gate *MaintenanceGate) error {
@@ -253,37 +197,10 @@ func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler
 	return nil
 }
 
-func isV1Request(r *http.Request) bool {
-	for _, v := range r.Header.Values("Accept") {
-		if strings.Contains(strings.ToLower(v), ".v1+") {
-			log.Printf("%s get v1 manifest: %s ", r.RemoteAddr, r.URL.Path)
-			return true
-		}
-	}
-	return false
-}
 func imageHandler(r *http.Request, serverAddr string) error {
-	host := proxyHostMapping(r.Host)
-	if r.Method != "HEAD" && !isV1Request(r) {
+	image, ok := manifestImage(r)
+	if !ok {
 		return nil
-	}
-	hostIsIP := net.ParseIP(strings.Split(host, ":")[0]) != nil
-	rex, _ := regexp.Compile("^/v2/library/.*")
-	if hostIsIP &&
-		(getEnv(registryMirrorKey) == "" || !rex.MatchString(r.URL.Path)) {
-		return nil
-	}
-	imagePath := strings.TrimPrefix(r.URL.Path, "/v2")
-	// 只替换最后一次 /manifests/（API 端点），避免替换 repository 路径中同名段
-	lastIdx := strings.LastIndex(imagePath, "/manifests/")
-	if lastIdx == -1 {
-		return nil
-	}
-	image := host + imagePath[:lastIdx] + ":" + imagePath[lastIdx+len("/manifests/"):]
-	imageArray := strings.Split(image, "/")
-	if len(imageArray) >= 2 && imageArray[1] == "library" {
-		imageArray[0] = getEnv(registryMirrorKey)
-		image = path.Join(imageArray...)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), imagePullTimeout)
@@ -292,6 +209,50 @@ func imageHandler(r *http.Request, serverAddr string) error {
 		return fmt.Errorf("ensure image %s: %w", image, err)
 	}
 	return nil
+}
+
+// manifestImage converts a manifest request into the upstream image reference.
+// A tag request pulls only the top-level manifest; a digest request pulls that
+// exact child manifest and its blobs.
+func manifestImage(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "", false
+	}
+
+	imagePath := strings.TrimPrefix(r.URL.Path, "/v2")
+	lastIdx := strings.LastIndex(imagePath, "/manifests/")
+	if lastIdx == -1 {
+		return "", false
+	}
+
+	repository := strings.TrimPrefix(imagePath[:lastIdx], "/")
+	reference := imagePath[lastIdx+len("/manifests/"):]
+	if repository == "" || reference == "" {
+		return "", false
+	}
+
+	host := proxyHostMapping(r.Host)
+	mirror := getEnv(registryMirrorKey)
+	if isIPHost(host) && (mirror == "" || !strings.HasPrefix(imagePath, "/library/")) {
+		return "", false
+	}
+	if mirror != "" && strings.HasPrefix(repository, "library/") {
+		host = mirror
+	}
+
+	separator := ":"
+	if strings.Contains(reference, ":") {
+		separator = "@"
+	}
+	return host + "/" + repository + separator + reference, true
+}
+
+func isIPHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	return net.ParseIP(strings.Trim(host, "[]")) != nil
 }
 
 func deleteImageTagPath(config *configuration.Configuration, project string, retain int, deleteBefore time.Duration, dryRun bool) (preDeletePath []string, err error) {
@@ -361,10 +322,10 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 
 func getEnv(key string) string {
 	var v = map[string]string{
-		imagePullMinIntervalKey:  "10m",
+		imagePullMinIntervalKey:  "5m",
 		imageCopyModekey:         "sync",
 		imagePullTimeoutKey:      "5m",
-		imagePullWorkersKey:      "4",
+		imagePullWorkersKey:      "2",
 		imagePullQueueSizeKey:    "0",
 		imageCleanJobIntervalKey: "1m",
 		imageCleanBeforeDaysKey:  "1",

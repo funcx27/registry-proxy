@@ -1,4 +1,4 @@
-{{- if or .Values.config.proxyMapping (and .Values.prePull.enabled (not .Values.prePull.existingConfigMap)) -}}
+{{- if .Values.config.proxyMapping -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,14 +9,5 @@ data:
   {{- if .Values.config.proxyMapping }}
   proxy-mapping.yaml: |
     {{- toYaml .Values.config.proxyMapping | nindent 4 }}
-  {{- end }}
-  {{- if and .Values.prePull.enabled (not .Values.prePull.existingConfigMap) }}
-  {{- if not .Values.prePull.images }}
-  {{- fail "prePull.images is required when prePull.enabled=true and prePull.existingConfigMap is empty" }}
-  {{- end }}
-  {{ .Values.prePull.fileName }}: |
-    {{- range .Values.prePull.images }}
-    {{ . }}
-    {{- end }}
   {{- end }}
 {{- end }}

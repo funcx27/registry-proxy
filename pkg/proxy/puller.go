@@ -26,7 +26,7 @@ type pullPool struct {
 	group  singleflight.Group
 	jobs   chan imagePullJob
 	cache  *cache.Cache
-	syncFn func(registryServer string, src ...string) error
+	copyFn func(context.Context, string, string) error
 
 	// closeMu guards the closed flag and is held across job handoff so Close
 	// cannot stop the workers while a producer is mid-send.
@@ -41,7 +41,7 @@ func newPullPool(
 	ctx context.Context,
 	workers, queueSize int,
 	cache *cache.Cache,
-	syncFn func(registryServer string, src ...string) error,
+	copyFn func(context.Context, string, string) error,
 ) *pullPool {
 	if workers < 1 {
 		workers = 1
@@ -54,7 +54,7 @@ func newPullPool(
 	p := &pullPool{
 		jobs:   make(chan imagePullJob, queueSize),
 		cache:  cache,
-		syncFn: syncFn,
+		copyFn: copyFn,
 		cancel: cancel,
 	}
 	p.wg.Add(workers)
@@ -155,12 +155,12 @@ func (p *pullPool) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case job := <-p.jobs:
-			job.done <- p.pull(job)
+			job.done <- p.pull(ctx, job)
 		}
 	}
 }
 
-func (p *pullPool) pull(job imagePullJob) (err error) {
+func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("pull image %s panic: %v", job.image, r)
@@ -173,7 +173,7 @@ func (p *pullPool) pull(job imagePullJob) (err error) {
 	}
 
 	begin := time.Now()
-	if err := p.syncFn(registryURL(job.registryAddr), job.image); err != nil {
+	if err := p.copyFn(ctx, job.registryAddr, job.image); err != nil {
 		log.Printf("pull image %s failed after %s: %v", job.image, time.Since(begin), err)
 		return fmt.Errorf("pull image %s: %w", job.image, err)
 	}

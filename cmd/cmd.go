@@ -68,13 +68,7 @@ var ServeCmd = &cobra.Command{
 			registryErr <- reg.ListenAndServe()
 		}()
 
-		prePullDone := proxy.PrePullImages(registryAddr)
 		go func() {
-			select {
-			case <-ctx.Done():
-				return
-			case <-prePullDone:
-			}
 			if err := proxy.CleanImage(ctx, config, maintenanceGate); err != nil {
 				logrus.Errorf("image cleanup stopped: %v", err)
 			}

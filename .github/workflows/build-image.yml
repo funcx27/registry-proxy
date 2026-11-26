@@ -69,7 +69,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test
-        run: go test -tags="containers_image_openpgp exclude_graphdriver_btrfs" ./...
+        run: go test ./...
 
       - name: Build binaries
         env:
@@ -90,13 +90,11 @@ jobs:
           go build \
             -trimpath \
             -ldflags="${ldflags}" \
-            -tags="containers_image_openpgp exclude_graphdriver_btrfs" \
             -o bin/registry-amd64 .
 
           GOOS=linux GOARCH=arm64 go build \
             -trimpath \
             -ldflags="${ldflags}" \
-            -tags="containers_image_openpgp exclude_graphdriver_btrfs" \
             -o bin/registry-arm64 .
 
           ./bin/registry-amd64 --version

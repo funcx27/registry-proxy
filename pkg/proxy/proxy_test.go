@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 )
 
 // usePuller swaps the package-level puller for the duration of a test.
-func usePuller(t *testing.T, syncFn func(string, ...string) error) *pullPool {
+func usePuller(t *testing.T, syncFn func(context.Context, string, string) error) *pullPool {
 	t.Helper()
 
 	pool := newPullPool(t.Context(), 1, 0, cache.New(time.Minute, time.Minute), syncFn)
@@ -44,7 +45,7 @@ func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
 	var upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
 
-	usePuller(t, func(string, ...string) error {
+	usePuller(t, func(context.Context, string, string) error {
 		return errors.New("upstream registry unavailable")
 	})
 
@@ -78,7 +79,7 @@ func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	usePuller(t, func(string, ...string) error {
+	usePuller(t, func(context.Context, string, string) error {
 		<-release
 		return nil
 	})
@@ -108,7 +109,7 @@ func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	usePuller(t, func(string, ...string) error {
+	usePuller(t, func(context.Context, string, string) error {
 		atomic.AddInt32(&syncCalls, 1)
 		<-release
 		return nil
@@ -176,7 +177,7 @@ func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startOnce, releaseOnce sync.Once
-	usePuller(t, func(string, ...string) error {
+	usePuller(t, func(context.Context, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
