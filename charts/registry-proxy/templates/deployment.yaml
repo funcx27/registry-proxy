@@ -77,6 +77,10 @@ spec:
               value: {{ .Values.env.imageCopyMode | quote }}
             - name: IMAGE_PULL_TIMEOUT
               value: {{ .Values.env.imagePullTimeout | quote }}
+            - name: IMAGE_PULL_WORKERS
+              value: {{ .Values.env.imagePullWorkers | quote }}
+            - name: IMAGE_PULL_QUEUE_SIZE
+              value: {{ .Values.env.imagePullQueueSize | quote }}
             - name: IMAGE_REPULL_MIN_INTERVAL
               value: {{ .Values.env.imageRepullMinInterval | quote }}
             {{- if .Values.env.dockerHubMirror }}

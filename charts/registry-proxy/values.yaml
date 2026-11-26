@@ -167,6 +167,10 @@ env:
   dockerHubMirror: ""
   imageCopyMode: sync
   imagePullTimeout: 5m
+  imagePullWorkers: 4
+  # 0 keeps producers backpressured until a worker is free. Use a small
+  # positive value only when bursts should wait in a short in-memory queue.
+  imagePullQueueSize: 0
   imageRepullMinInterval: 5m
   # Extra environment variables. Each item supports the normal Kubernetes env form.
   extra: []

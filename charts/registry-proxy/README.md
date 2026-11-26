@@ -377,9 +377,16 @@ imageClean:
 | `env.dockerHubMirror` | `""` | `DOCKERHUB_MIRROR`. |
 | `env.imageCopyMode` | `sync` | `sync` or `async`. |
 | `env.imagePullTimeout` | `5m` | Pull timeout. |
+| `env.imagePullWorkers` | `4` | Number of workers executing image copies. |
+| `env.imagePullQueueSize` | `0` | In-memory pull queue size. `0` uses direct worker handoff with backpressure. |
 | `env.imageRepullMinInterval` | `5m` | Minimum re-pull interval. |
 | `env.extra` | `[]` | Additional Kubernetes env entries. |
 | `extraVolumes` / `extraVolumeMounts` | `[]` | Additional pod volumes and mounts. |
+
+In `sync` mode, concurrent manifest requests for the same image are coalesced
+into one copy, and copies run on at most `env.imagePullWorkers` workers. If the
+copy fails or exceeds `env.imagePullTimeout`, the request fails with `502` (or
+`504` on timeout) instead of being forwarded to the local registry.
 
 ## Validate the chart
 

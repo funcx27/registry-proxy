@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -30,6 +31,8 @@ var (
 	imagePullMinIntervalKey    = "IMAGE_REPULL_MIN_INTERVAL"
 	imageCopyModekey           = "IMAGE_COPY_MODE"
 	imagePullTimeoutKey        = "IMAGE_PULL_TIMEOUT"
+	imagePullWorkersKey        = "IMAGE_PULL_WORKERS"
+	imagePullQueueSizeKey      = "IMAGE_PULL_QUEUE_SIZE"
 	imagePrePullListKey        = "IMAGE_LIST_FILE"
 	imageCleanJobIntervalKey   = "IMAGE_CLEAN_INTERVAL"
 	imageCleanBeforeDaysKey    = "IMAGE_CLEAN_BEFORE_DAYS"
@@ -37,6 +40,7 @@ var (
 	imageCleanProjectKey       = "IMAGE_CLEAN_PROJECT"
 	registryMirrorKey          = "DOCKERHUB_MIRROR"
 	imageCache                 *cache.Cache
+	imagePuller                *pullPool
 	imagePullTimeout           time.Duration
 	projects                   []string
 	imageCleanBefore           time.Duration
@@ -47,14 +51,28 @@ func init() {
 	rePullInterval := envStrToDuration(imagePullMinIntervalKey)
 	imagePullTimeout = envStrToDuration(imagePullTimeoutKey)
 	imageCache = cache.New(rePullInterval, time.Hour)
+	pullWorkers := envInt(imagePullWorkersKey, 4)
+	if pullWorkers < 1 {
+		pullWorkers = 1
+	}
+	pullQueueSize := envInt(imagePullQueueSizeKey, 0)
+	if pullQueueSize < 0 {
+		pullQueueSize = 0
+	}
+	imagePuller = newPullPool(context.Background(), pullWorkers, pullQueueSize, imageCache, cmd.ImageSync)
 	trimmedProjects := strings.TrimFunc(getEnv(imageCleanProjectKey), unicode.IsSpace)
 	projects = strings.Split(trimmedProjects, ",")
 	log.Printf("image re-pull min interval: %s\n", rePullInterval)
 	log.Printf("image pull timeout: %s\n", imagePullTimeout)
+	log.Printf("image pull workers: %d, queue size: %d\n", pullWorkers, pullQueueSize)
 	log.Printf("image copy mode: %s\n", getEnv(imageCopyModekey))
 	log.Printf("dockerhub mirror: %s\n", getEnv(registryMirrorKey))
-	b, _ := os.ReadFile("/var/lib/registry/proxy-mapping.yaml")
-	yaml.Unmarshal(b, &registryProxyMap)
+	const proxyMappingPath = "/var/lib/registry/proxy-mapping.yaml"
+	if b, err := os.ReadFile(proxyMappingPath); err == nil {
+		if err := yaml.Unmarshal(b, &registryProxyMap); err != nil {
+			log.Printf("parse %s: %v", proxyMappingPath, err)
+		}
+	}
 	if len(registryProxyMap) > 0 {
 		s := "registry proxy host mapping: "
 		for k, v := range registryProxyMap {
@@ -211,9 +229,26 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler {
 	switch getEnv(imageCopyModekey) {
 	case "sync":
-		imageHandler(r, registryAddr)
+		if err := imageHandler(r, registryAddr); err != nil {
+			log.Printf("%s pull image failed: %v", r.RemoteAddr, err)
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+				status := http.StatusBadGateway
+				if errors.Is(err, context.DeadlineExceeded) {
+					status = http.StatusGatewayTimeout
+				}
+				http.Error(w, "image pull failed", status)
+			})
+		}
 	case "async":
-		go imageHandler(r, registryAddr)
+		// The request is proxied immediately below, so do not retain it after
+		// ServeHTTP returns.
+		asyncRequest := r.Clone(context.Background())
+		go func() {
+			if err := imageHandler(asyncRequest, registryAddr); err != nil {
+				log.Printf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)
+			}
+		}()
 	}
 	return nil
 }
@@ -224,69 +259,39 @@ func isV1Request(r *http.Request) bool {
 			log.Printf("%s get v1 manifest: %s ", r.RemoteAddr, r.URL.Path)
 			return true
 		}
-		fmt.Printf("r.Header.Values(\"Accept\"): %v\n", r.Header.Values("Accept"))
 	}
 	return false
 }
-func imageHandler(r *http.Request, serverAddr string) {
+func imageHandler(r *http.Request, serverAddr string) error {
 	host := proxyHostMapping(r.Host)
 	if r.Method != "HEAD" && !isV1Request(r) {
-		return
+		return nil
 	}
 	hostIsIP := net.ParseIP(strings.Split(host, ":")[0]) != nil
 	rex, _ := regexp.Compile("^/v2/library/.*")
 	if hostIsIP &&
 		(getEnv(registryMirrorKey) == "" || !rex.MatchString(r.URL.Path)) {
-		return
+		return nil
 	}
 	imagePath := strings.TrimPrefix(r.URL.Path, "/v2")
 	// 只替换最后一次 /manifests/（API 端点），避免替换 repository 路径中同名段
 	lastIdx := strings.LastIndex(imagePath, "/manifests/")
 	if lastIdx == -1 {
-		return
+		return nil
 	}
 	image := host + imagePath[:lastIdx] + ":" + imagePath[lastIdx+len("/manifests/"):]
-	imageArrary := strings.Split(image, "/")
-	if imageArrary[1] == "library" {
-		imageArrary[0] = getEnv(registryMirrorKey)
-		image = path.Join(imageArrary...)
+	imageArray := strings.Split(image, "/")
+	if len(imageArray) >= 2 && imageArray[1] == "library" {
+		imageArray[0] = getEnv(registryMirrorKey)
+		image = path.Join(imageArray...)
 	}
-	v, pulledOrPulling := imageCache.Get(image)
-	if !pulledOrPulling {
-		imageCache.SetDefault(image, "pulling")
-		beginTime := time.Now()
-		log.Println(r.RemoteAddr, "pulling image:", image)
-		err := cmd.ImageSync(registryURL(serverAddr), image)
-		if err != nil {
-			imageCache.Delete(image)
-			log.Println(err)
-			return
-		}
-		imageCache.SetDefault(image, "pulled")
-		log.Printf("%s pulled image: %s in %s\n", r.RemoteAddr, image, time.Since(beginTime))
-		return
-	}
-	if v.(string) == "pulling" && getEnv(imageCopyModekey) == "sync" {
-		ctx, cancel := context.WithTimeout(context.Background(), imagePullTimeout)
-		defer cancel()
-		ticker := time.NewTicker(3 * time.Second)
-		start := time.Now()
-		defer ticker.Stop()
-		for {
-			select {
-			case t := <-ticker.C:
-				v, _ = imageCache.Get(image)
-				if v.(string) == "pulled" {
-					return
-				}
 
-				log.Printf("%s pull %s waiting %.2fs...\n", r.RemoteAddr, image, t.Sub(start).Seconds())
-			case <-ctx.Done():
-				log.Printf("%s pull %s timeout\n", r.RemoteAddr, image)
-				return
-			}
-		}
+	ctx, cancel := context.WithTimeout(r.Context(), imagePullTimeout)
+	defer cancel()
+	if err := imagePuller.ensure(ctx, serverAddr, image); err != nil {
+		return fmt.Errorf("ensure image %s: %w", image, err)
 	}
+	return nil
 }
 
 func deleteImageTagPath(config *configuration.Configuration, project string, retain int, deleteBefore time.Duration, dryRun bool) (preDeletePath []string, err error) {
@@ -314,6 +319,7 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 			if err != nil {
 				return nil
 			}
+			//nolint:unconvert // Atim.Nsec is int32 on some 32-bit platforms.
 			accessTime := time.Unix(stat.Atim.Sec, int64(stat.Atim.Nsec))
 			tagPath := path.Dir(fpath)
 			paths[path.Dir(tagPath)] = append(paths[path.Dir(tagPath)], tagTime{tag: path.Base(tagPath), time: accessTime})
@@ -358,6 +364,8 @@ func getEnv(key string) string {
 		imagePullMinIntervalKey:  "10m",
 		imageCopyModekey:         "sync",
 		imagePullTimeoutKey:      "5m",
+		imagePullWorkersKey:      "4",
+		imagePullQueueSizeKey:    "0",
 		imageCleanJobIntervalKey: "1m",
 		imageCleanBeforeDaysKey:  "1",
 	}
@@ -365,6 +373,15 @@ func getEnv(key string) string {
 		return v[key]
 	}
 	return os.Getenv(key)
+}
+
+func envInt(envKey string, fallback int) int {
+	value, err := strconv.Atoi(getEnv(envKey))
+	if err != nil {
+		log.Printf("%s value error: %v, using %d", envKey, err, fallback)
+		return fallback
+	}
+	return value
 }
 
 func envStrToDuration(envKey string) time.Duration {
