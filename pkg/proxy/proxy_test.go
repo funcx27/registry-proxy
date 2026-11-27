@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/patrickmn/go-cache"
+	"github.com/regclient/regclient/types/errs"
 )
 
 // newTestProxyServer builds a server with a deterministic pull pool so tests
@@ -89,6 +91,31 @@ func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&upstreamCalls); got != 0 {
 		t.Fatalf("upstream calls = %d, want 0 (request must not be forwarded)", got)
+	}
+}
+
+func TestProxyPullNotFoundReturnsManifestUnknown(t *testing.T) {
+	var upstreamCalls int32
+	upstream := newUpstream(t, &upstreamCalls)
+
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
+		"ghcr.io": {},
+	}, func(context.Context, string, string, string) error {
+		return fmt.Errorf("get manifest ghcr.io/org/app:latest: %w", errs.ErrNotFound)
+	})
+
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
+	resp, err := proxyServer.Client().Head(manifestPath)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", manifestPath, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if got := resp.Header.Get("Docker-Distribution-API-Version"); got != "registry/2.0" {
+		t.Fatalf("Docker-Distribution-API-Version = %q, want registry/2.0", got)
 	}
 }
 

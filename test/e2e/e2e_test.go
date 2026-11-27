@@ -516,13 +516,16 @@ func TestConcurrentTagRequestsPullOnce(t *testing.T) {
 	}
 }
 
-func TestMissingImageReturnsBadGateway(t *testing.T) {
+func TestMissingImageReturnsManifestUnknown(t *testing.T) {
 	p := startProxy(t, nil)
 
 	reference := fmt.Sprintf("missing-%d", time.Now().UnixNano())
 	status, _, body := doManifestRequest(t, p, http.MethodHead, reference)
-	if status != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusBadGateway, body)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusNotFound, body)
+	}
+	if !strings.Contains(string(body), "MANIFEST_UNKNOWN") {
+		t.Fatalf("body = %s, want MANIFEST_UNKNOWN", body)
 	}
 }
 

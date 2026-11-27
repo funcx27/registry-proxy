@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/distribution/distribution/v3/configuration"
+	"github.com/regclient/regclient/types/errs"
 
 	"registry-proxy/internal/gc"
 )
@@ -97,12 +99,7 @@ func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute)
 			// elapsed time. Avoid duplicating the same error here; this branch
 			// only translates it into an HTTP response.
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-				status := http.StatusBadGateway
-				if errors.Is(err, context.DeadlineExceeded) {
-					status = http.StatusGatewayTimeout
-				}
-				http.Error(w, "image pull failed", status)
+				writePullError(w, err)
 			})
 		}
 	case CopyModeAsync:
@@ -116,6 +113,35 @@ func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute)
 		}()
 	}
 	return nil
+}
+
+// writePullError translates a copy failure into a Registry API error so
+// clients keep normal registry semantics. An upstream "not found" (for
+// example a tag that was never mirrored) must surface as 404 manifest unknown
+// instead of a 502, which would make clients think the proxy itself failed.
+func writePullError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+
+	status := http.StatusBadGateway
+	code := "UNKNOWN"
+	message := "image pull failed"
+	switch {
+	case errors.Is(err, errs.ErrNotFound):
+		status = http.StatusNotFound
+		code = "MANIFEST_UNKNOWN"
+		message = "manifest unknown"
+	case errors.Is(err, context.DeadlineExceeded):
+		status = http.StatusGatewayTimeout
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"errors": []map[string]string{{
+			"code":    code,
+			"message": message,
+			"detail":  err.Error(),
+		}},
+	})
 }
 
 func (s *server) imageHandler(r *http.Request, route *registryRoute, image string) error {
