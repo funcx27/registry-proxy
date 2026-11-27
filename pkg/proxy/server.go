@@ -14,6 +14,7 @@ import (
 // server owns the state used by the HTTP proxy and by background image pulls.
 type server struct {
 	registryAddr string
+	instanceID   string
 	options      Options
 	puller       *pullPool
 	mappings     map[string]RegistryMapping
@@ -30,12 +31,18 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load registry mappings: %w", err)
 	}
+	instanceID, err := newProxyInstanceID()
+	if err != nil {
+		return nil, err
+	}
 
 	s := &server{
 		registryAddr: registryAddr,
+		instanceID:   instanceID,
 		options:      opts,
 		mappings:     mappings,
 	}
+	logger.Debugf("proxy instance ID: %s", instanceID)
 
 	if opts.CopyMode == CopyModeOff {
 		// Native registry mode: routing normalization stays active, but no
@@ -43,7 +50,7 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 		logger.Info("image copy mode: off (native registry mode)")
 		logRegistryMappings(mappings, logger.Debugf)
 	} else {
-		copier, err := newImageCopier(opts.RegistryAuthFile)
+		copier, err := newImageCopier(opts.RegistryAuthFile, instanceID)
 		if err != nil {
 			return nil, fmt.Errorf("initialize image copier: %w", err)
 		}
@@ -100,6 +107,22 @@ func (s *server) handler(transport http.RoundTripper) http.Handler {
 
 func (s *server) preprocessMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chain, tooDeep := parseLoopChain(r.Header)
+		if tooDeep {
+			s.rejectProxyLoop(w, r, len(chain), fmt.Sprintf("proxy chain reached the maximum of %d hops; check registry mappings and upstream addresses", maxProxyHops))
+			return
+		}
+		if s.instanceID != "" && chainContains(chain, s.instanceID) {
+			s.rejectProxyLoop(w, r, len(chain), "proxy loop detected: upstream request returned to the same registry-proxy instance; check registry mapping and upstream DNS")
+			return
+		}
+		if len(chain) > 0 {
+			r = r.WithContext(contextWithLoopChain(r.Context(), chain))
+		}
+		// The chain is propagated by loopGuardTransport from request context.
+		// Do not forward the internal header to the local registry or clients.
+		r.Header.Del(loopChainHeader)
+
 		route, err := s.resolveRoute(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

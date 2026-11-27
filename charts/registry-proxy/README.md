@@ -91,6 +91,21 @@ When both a Host mapping and a namespace mapping match, the Host mapping wins.
 An explicit registry domain in the first path component still takes precedence
 over the Host header, so `/v2/docker.io/...` is always treated as Docker Hub.
 
+### Proxy loop detection
+
+Every registry-proxy process generates a random instance ID. Requests sent to
+an upstream through regclient carry the internal
+`X-Registry-Proxy-Chain` header, and each proxy appends its own ID. If a request
+returns to an instance that already handled it, the proxy returns
+`508 Loop Detected` and logs the request path and chain length. This catches
+direct self-references and cycles such as proxy A sending to proxy B and back
+to A before the client times out.
+
+Hostname comparison is intentionally not used: the same hostname may resolve to
+the proxy inside the cluster and to a real upstream inside the proxy pod. That
+split-horizon layout is valid as long as the upstream request reaches a
+different instance.
+
 The chart writes this table to `/var/lib/registry/registry-mapping.yaml`, the
 default location derived from the registry configuration's filesystem root. Set
 `REGISTRY_MAPPING_PATH` to use a different path, or point

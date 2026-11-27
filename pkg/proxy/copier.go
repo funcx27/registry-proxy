@@ -3,10 +3,12 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/regclient/regclient"
 	"github.com/regclient/regclient/config"
+	"github.com/regclient/regclient/scheme/reg"
 	"github.com/regclient/regclient/types/ref"
 )
 
@@ -15,20 +17,22 @@ import (
 // the index itself. Child manifests and their blobs are copied when a client
 // requests a specific child digest.
 type imageCopier struct {
-	authHosts []config.Host
+	authHosts  []config.Host
+	instanceID string
 
 	mu      sync.Mutex
 	clients map[string]*regclient.RegClient
 }
 
-func newImageCopier(authFile string) (*imageCopier, error) {
+func newImageCopier(authFile, instanceID string) (*imageCopier, error) {
 	hosts, err := loadAuthHosts(authFile)
 	if err != nil {
 		return nil, err
 	}
 	return &imageCopier{
-		authHosts: hosts,
-		clients:   make(map[string]*regclient.RegClient),
+		authHosts:  hosts,
+		instanceID: instanceID,
+		clients:    make(map[string]*regclient.RegClient),
 	}, nil
 }
 
@@ -62,7 +66,11 @@ func (c *imageCopier) client(registryAddr string) *regclient.RegClient {
 	hosts = append(hosts, c.authHosts...)
 	hosts = append(hosts, config.Host{Name: registryAddr, TLS: config.TLSDisabled})
 
-	rc := regclient.New(regclient.WithConfigHost(hosts...))
+	transport := &loopGuardTransport{base: http.DefaultTransport, instanceID: c.instanceID}
+	rc := regclient.New(
+		regclient.WithConfigHost(hosts...),
+		regclient.WithRegOpts(reg.WithHTTPClient(&http.Client{Transport: transport})),
+	)
 	c.clients[registryAddr] = rc
 	return rc
 }

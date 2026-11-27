@@ -105,8 +105,9 @@ func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute)
 		}
 	case CopyModeAsync:
 		// The request is proxied immediately below, so do not retain it after
-		// ServeHTTP returns.
-		asyncRequest := r.Clone(context.Background())
+		// ServeHTTP returns. Keep context values such as the proxy loop chain,
+		// but detach cancellation from the client request.
+		asyncRequest := r.Clone(context.WithoutCancel(r.Context()))
 		go func() {
 			if err := s.imageHandler(asyncRequest, route, image); err != nil {
 				logger.Errorf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)

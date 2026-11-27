@@ -32,6 +32,7 @@ func newTestProxyServer(
 
 	srv := &server{
 		registryAddr: "127.0.0.1:5000",
+		instanceID:   "test-instance",
 		options:      opts,
 		mappings:     mappings,
 	}

@@ -18,6 +18,7 @@ type imagePullJob struct {
 	registryAddr string
 	sourceImage  string
 	localTarget  string
+	loopChain    []string
 	done         chan error
 }
 
@@ -106,6 +107,7 @@ func (p *pullPool) ensure(ctx context.Context, registryAddr, sourceImage, localT
 			registryAddr: registryAddr,
 			sourceImage:  sourceImage,
 			localTarget:  localTarget,
+			loopChain:    append([]string(nil), loopChainFromContext(ctx)...),
 			done:         make(chan error, 1),
 		}
 
@@ -178,7 +180,8 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	}
 
 	begin := time.Now()
-	if err := p.copyFn(ctx, job.registryAddr, job.sourceImage, job.localTarget); err != nil {
+	copyCtx := contextWithLoopChain(ctx, job.loopChain)
+	if err := p.copyFn(copyCtx, job.registryAddr, job.sourceImage, job.localTarget); err != nil {
 		logger.Errorf("pull image %s failed after %s: %v", job.sourceImage, time.Since(begin), err)
 		return fmt.Errorf("pull image %s: %w", job.sourceImage, err)
 	}
