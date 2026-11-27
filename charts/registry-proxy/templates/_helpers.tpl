@@ -93,10 +93,10 @@ The standard Docker config JSON key is always used.
 {{- end }}
 
 {{/*
-ConfigMap containing proxy-mapping.yaml.
+ConfigMap containing registry-mapping.yaml.
 */}}
-{{- define "registry-proxy.proxyMappingConfigMapName" -}}
-{{- default (include "registry-proxy.fullname" .) .Values.config.existingProxyMappingConfigMap }}
+{{- define "registry-proxy.registryMappingConfigMapName" -}}
+{{- default (include "registry-proxy.fullname" .) .Values.config.existingRegistryMappingConfigMap }}
 {{- end }}
 
 {{/*

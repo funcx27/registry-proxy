@@ -1,4 +1,4 @@
-{{- if .Values.config.proxyMapping -}}
+{{- if and .Values.config.registryMapping (not .Values.config.existingRegistryMappingConfigMap) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,8 +6,6 @@ metadata:
   labels:
     {{- include "registry-proxy.labels" . | nindent 4 }}
 data:
-  {{- if .Values.config.proxyMapping }}
-  proxy-mapping.yaml: |
-    {{- toYaml .Values.config.proxyMapping | nindent 4 }}
-  {{- end }}
+  registry-mapping.yaml: |
+    {{- toYaml .Values.config.registryMapping | nindent 4 }}
 {{- end }}

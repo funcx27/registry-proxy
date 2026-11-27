@@ -16,7 +16,7 @@
 {{- if and .Values.upstreamAuth.enabled (not .Values.upstreamAuth.existingSecret) -}}
 {{- $_ := set $podAnnotations "checksum/upstream-auth" (include (print $.Template.BasePath "/secret-upstream-auth.yaml") . | sha256sum) -}}
 {{- end -}}
-{{- if .Values.config.proxyMapping -}}
+{{- if and .Values.config.registryMapping (not .Values.config.existingRegistryMappingConfigMap) -}}
 {{- $_ := set $podAnnotations "checksum/config" (include (print $.Template.BasePath "/configmap.yaml") . | sha256sum) -}}
 {{- end -}}
 apiVersion: apps/v1
@@ -83,10 +83,6 @@ spec:
               value: {{ .Values.env.imagePullQueueSize | quote }}
             - name: IMAGE_REPULL_MIN_INTERVAL
               value: {{ .Values.env.imageRepullMinInterval | quote }}
-            {{- if .Values.env.dockerHubMirror }}
-            - name: DOCKERHUB_MIRROR
-              value: {{ .Values.env.dockerHubMirror | quote }}
-            {{- end }}
             {{- if .Values.upstreamAuth.enabled }}
             - name: REGISTRY_AUTH_FILE
               value: {{ include "registry-proxy.upstreamAuthFile" . | quote }}
@@ -130,10 +126,10 @@ spec:
               mountPath: {{ .Values.upstreamAuth.mountPath | quote }}
               readOnly: true
             {{- end }}
-            {{- if or .Values.config.proxyMapping .Values.config.existingProxyMappingConfigMap }}
-            - name: proxy-mapping
-              mountPath: /var/lib/registry/proxy-mapping.yaml
-              subPath: proxy-mapping.yaml
+            {{- if or .Values.config.registryMapping .Values.config.existingRegistryMappingConfigMap }}
+            - name: registry-mapping
+              mountPath: /var/lib/registry/registry-mapping.yaml
+              subPath: registry-mapping.yaml
               readOnly: true
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
@@ -161,10 +157,10 @@ spec:
             secretName: {{ include "registry-proxy.upstreamAuthSecretName" . }}
             defaultMode: 0444
         {{- end }}
-        {{- if or .Values.config.proxyMapping .Values.config.existingProxyMappingConfigMap }}
-        - name: proxy-mapping
+        {{- if or .Values.config.registryMapping .Values.config.existingRegistryMappingConfigMap }}
+        - name: registry-mapping
           configMap:
-            name: {{ include "registry-proxy.proxyMappingConfigMapName" . }}
+            name: {{ include "registry-proxy.registryMappingConfigMapName" . }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

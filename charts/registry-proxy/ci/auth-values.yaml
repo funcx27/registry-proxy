@@ -2,8 +2,10 @@ persistence:
   type: emptyDir
 
 config:
-  proxyMapping:
-    docker.io: registry.dockermirror.com
+  registryMapping:
+    docker.io:
+      defaultNamespace: library
+    ghcr.io: {}
 
 upstreamAuth:
   enabled: true

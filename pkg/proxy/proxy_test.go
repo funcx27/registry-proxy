@@ -18,23 +18,34 @@ import (
 func newTestProxyServer(
 	t *testing.T,
 	opts Options,
-	mapping map[string]string,
-	syncFn func(context.Context, string, string) error,
+	mappings map[string]RegistryMapping,
+	syncFn func(context.Context, string, string, string) error,
 ) *server {
 	t.Helper()
 
+	if opts.CopyMode == "" {
+		opts.CopyMode = CopyModeSync
+	}
 	if opts.PullTimeout == 0 {
 		opts.PullTimeout = time.Minute
 	}
-	pool := newPullPool(t.Context(), 1, 0, cache.New(time.Minute, time.Minute), syncFn)
-	t.Cleanup(pool.Close)
 
-	return &server{
+	srv := &server{
 		registryAddr: "127.0.0.1:5000",
 		options:      opts,
-		puller:       pool,
-		mapping:      mapping,
+		mappings:     mappings,
 	}
+	if opts.CopyMode == CopyModeOff {
+		return srv
+	}
+	if syncFn == nil {
+		syncFn = func(context.Context, string, string, string) error { return nil }
+	}
+
+	pool := newPullPool(t.Context(), 1, 0, cache.New(time.Minute, time.Minute), syncFn)
+	t.Cleanup(pool.Close)
+	srv.puller = pool
+	return srv
 }
 
 func newUpstream(t *testing.T, calls *int32) *httptest.Server {
@@ -47,13 +58,18 @@ func newUpstream(t *testing.T, calls *int32) *httptest.Server {
 	}))
 }
 
-const manifestPath = "http://registry.example/v2/team/nginx/manifests/latest"
+const (
+	manifestPath      = "http://ghcr.io/v2/org/app/manifests/latest"
+	manifestProxyPath = "/v2/org/app/manifests/latest"
+)
 
 func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
 	var upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
 
-	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
+		"ghcr.io": {},
+	}, func(context.Context, string, string, string) error {
 		return errors.New("upstream registry unavailable")
 	})
 
@@ -84,7 +100,7 @@ func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 	srv := newTestProxyServer(t, Options{
 		CopyMode:    CopyModeSync,
 		PullTimeout: 30 * time.Millisecond,
-	}, nil, func(context.Context, string, string) error {
+	}, map[string]RegistryMapping{"ghcr.io": {}}, func(context.Context, string, string, string) error {
 		<-release
 		return nil
 	})
@@ -112,7 +128,9 @@ func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
+		"ghcr.io": {},
+	}, func(context.Context, string, string, string) error {
 		atomic.AddInt32(&syncCalls, 1)
 		<-release
 		return nil
@@ -178,23 +196,41 @@ func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startOnce, releaseOnce sync.Once
-	srv := newTestProxyServer(t, Options{CopyMode: CopyModeAsync}, nil, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeAsync}, map[string]RegistryMapping{
+		"ghcr.io": {},
+	}, func(context.Context, string, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
-	req := httptest.NewRequest(http.MethodHead, "/v2/team/nginx/manifests/latest", nil)
-	req.Host = "registry.example"
+	var upstreamCalls int32
+	upstream := newUpstream(t, &upstreamCalls)
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
+	client := proxyServer.Client()
 
-	dispatched := make(chan http.Handler, 1)
-	go func() { dispatched <- srv.manifestDispatcherCustom(req) }()
+	req, err := http.NewRequest(http.MethodHead, proxyServer.URL+manifestProxyPath, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "ghcr.io"
+
+	done := make(chan int, 1)
+	go func() {
+		resp, err := client.Do(req)
+		if err != nil {
+			done <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		done <- resp.StatusCode
+	}()
 
 	select {
-	case handler := <-dispatched:
-		if handler != nil {
-			t.Fatalf("async dispatcher returned an error handler; want nil so the request is proxied")
+	case status := <-done:
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want %d", status, http.StatusOK)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("async dispatcher blocked the manifest request")
@@ -204,5 +240,44 @@ func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
 	case <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("background pull did not start")
+	}
+}
+
+// TestOffModeRewritesHostRouteWithoutPull pins that Host/ns path normalization
+// is a routing feature and remains active when on-demand copying is disabled.
+func TestOffModeRewritesHostRouteWithoutPull(t *testing.T) {
+	var upstreamCalls int32
+	var gotPath string
+	upstream := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeOff}, map[string]RegistryMapping{
+		"ghcr.io": {},
+	}, nil)
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
+	client := proxyServer.Client()
+
+	req, err := http.NewRequest(http.MethodHead, proxyServer.URL+manifestProxyPath, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "ghcr.io"
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if want := "/v2/ghcr.io/org/app/manifests/latest"; gotPath != want {
+		t.Fatalf("upstream path = %q, want %q", gotPath, want)
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
 	}
 }

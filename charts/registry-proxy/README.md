@@ -36,15 +36,66 @@ helm install registry-proxy ./charts/registry-proxy \
 
 ## Addressing the proxy
 
-The application selects the upstream registry from the Docker request `Host`
-header. Point the upstream registry hostname (or a hostname listed in
-`config.proxyMapping`) at this Service through DNS or an Ingress. If the public
-hostname is not the upstream registry hostname, add a mapping entry:
+The proxy normalizes three equivalent client forms to the same local
+repository, so path-mode and host-mode clients share one cache:
+
+| Mode | Client request | Local repository |
+| --- | --- | --- |
+| path | `/v2/ghcr.io/org/app/manifests/v1` | `ghcr.io/org/app` |
+| host | `Host: ghcr.io` + `/v2/org/app/manifests/v1` | `ghcr.io/org/app` |
+| ns | `/v2/org/app/manifests/v1?ns=ghcr.io` | `ghcr.io/org/app` |
+
+Path mode needs no configuration for public domains: the first path segment is
+treated as the upstream registry when it is a valid DNS name. Host mode suits
+clients that resolve an upstream hostname (for example through `/etc/hosts`) to
+the proxy. Namespace mode is a fallback for runtimes that can rewrite neither
+the Host header nor the path. Host and ns modes require an entry in
+`config.registryMapping`; restricting them to configured names keeps the proxy's
+own Service hostname from being mistaken for an upstream registry.
+
+`config.registryMapping` also selects the upstream address and Docker Hub's
+conventional `library` namespace:
 
 ```yaml
 config:
-  proxyMapping:
-    proxy.example.com: registry-1.docker.io
+  registryMapping:
+    docker.io:
+      defaultNamespace: library
+    ghcr.io: {}
+    quay.io:
+      # Optional: copy through another host or registry-proxy, with an optional
+      # repository prefix.
+      registry: proxy.example.com/quay.io
+```
+
+The chart writes this table to `/var/lib/registry/registry-mapping.yaml`, the
+default location derived from the registry configuration's filesystem root. Set
+`REGISTRY_MAPPING_PATH` to use a different path, or point
+`config.existingRegistryMappingConfigMap` at an existing ConfigMap containing
+the `registry-mapping.yaml` key.
+
+### containerd path mode
+
+The client sends `/v2/ghcr.io/...` to the proxy:
+
+```toml
+# /etc/containerd/certs.d/ghcr.io/hosts.toml
+server = "http://registry.example.com:5000/v2/ghcr.io"
+override_path = true
+
+[host."http://registry.example.com:5000/v2/ghcr.io"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+```
+
+### containerd host mode
+
+The client sends `Host: ghcr.io` and `/v2/org/app/...` to the proxy. It needs a
+mapping entry for `ghcr.io` and the proxy must be reachable under that name:
+
+```toml
+# /etc/containerd/certs.d/ghcr.io/hosts.toml
+server = "http://registry.example.com:5000"
 ```
 
 ### Fixed ClusterIP for `/etc/hosts`
@@ -71,19 +122,6 @@ A ClusterIP is normally reachable only from inside the cluster or from networks
 that route to the service CIDR. For external clients, use NodePort, LoadBalancer,
 or Ingress instead.
 
-When the Service is reached by IP, `DOCKERHUB_MIRROR` enables the special
-Docker Hub library-image path (`/v2/library/...`). For example:
-
-```yaml
-env:
-  dockerHubMirror: registry.dockermirror.com
-```
-
-```bash
-kubectl port-forward -n registry-proxy svc/registry-proxy 5000:80
-curl http://127.0.0.1:5000/v2/
-```
-
 ## Plain HTTP and the 443 fallback
 
 registry-proxy serves plain HTTP on the main Service port, which defaults to
@@ -102,7 +140,7 @@ HTTPS first when `--insecure-registry` is set:
 Typical client usage:
 
 ```bash
-nerdctl --insecure-registry pull registry.example.com/dockerhub/alpine/socat:latest
+nerdctl --insecure-registry pull registry.example.com/docker.io/library/alpine:latest
 ```
 
 The `--insecure-registry` flag is still required: it skips TLS verification and
@@ -120,13 +158,29 @@ fallback port is not involved in Ingress traffic.
 
 The 443 fallback is a nerdctl compatibility behavior. containerd's CRI plugin
 does not use nerdctl's fallback logic, so kubelet image pulls need node-side
-configuration. Either terminate real TLS in front of the registry and configure
-containerd with a CA or skip-verify `hosts.toml`, or keep HTTP and configure a
-`certs.d` `hosts.toml` with `server = "http://<registry-host>"` plus
-`config_path` in containerd's CRI registry settings. That is node bootstrap
-configuration and is intentionally not managed by this chart.
+configuration. Install a `hosts.toml` under `/etc/containerd/certs.d/<registry>/`
+and enable the directory in containerd:
+
+```toml
+# /etc/containerd/config.toml
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+```
+
+The `hosts.toml` examples above then select path or host mode for CRI pulls.
+Node bootstrap is intentionally not managed by this chart.
 
 Do not expose this plain-HTTP Service directly to an untrusted network.
+
+## Copy modes
+
+`env.imageCopyMode` controls on-demand copying:
+
+- `sync` copies the manifest before answering the manifest request.
+- `async` answers immediately and copies in the background.
+- `off` is native registry mode. No upstream credentials, copier, cache, or
+  worker pool is created and nothing is pulled. Path/host/ns normalization
+  still runs, so every entry point resolves to the same local repository.
 
 ## Logging
 
@@ -372,23 +426,35 @@ The chart defaults to a `Recreate` deployment strategy because a
 `ReadWriteOnce` volume cannot normally be attached to two pods at once. If you use an RWX volume and set `replicaCount`
 above one, change `deploymentStrategy` accordingly.
 
-## Proxy host mapping
+## Registry mapping
 
-`/var/lib/registry/proxy-mapping.yaml` is loaded by the application at startup.
-The chart can generate it from values:
+The routing table is loaded at startup from
+`<storage rootdirectory>/registry-mapping.yaml` by default. For the container
+image that is `/var/lib/registry/registry-mapping.yaml`. `REGISTRY_MAPPING_PATH`
+overrides the location, which is useful when the storage driver does not expose
+a filesystem root.
 
-```yaml
-config:
-  proxyMapping:
-    docker.io: registry.dockermirror.com
-```
-
-Or mount an existing ConfigMap containing the `proxy-mapping.yaml` key:
+The chart can generate the table from values:
 
 ```yaml
 config:
-  existingProxyMappingConfigMap: my-proxy-mapping
+  registryMapping:
+    docker.io:
+      defaultNamespace: library
+    ghcr.io: {}
+    quay.io:
+      registry: proxy.example.com/quay.io
 ```
+
+Or mount an existing ConfigMap containing the `registry-mapping.yaml` key:
+
+```yaml
+config:
+  existingRegistryMappingConfigMap: my-registry-mapping
+```
+
+A missing file is allowed and simply disables the mappings. A malformed file
+fails startup instead of silently changing routing.
 
 ## Image cleanup
 
@@ -425,8 +491,7 @@ imageClean:
 | `upstreamAuth.dockerconfigjson` | `""` | Raw JSON supplied with `--set-file`. |
 | `env.logLevel` | `error` | `REGISTRY_LOG_LEVEL`, distribution's internal logger. |
 | `env.appLogLevel` | `info` | `APP_LOG_LEVEL`, registry-proxy's own logger. |
-| `env.dockerHubMirror` | `""` | `DOCKERHUB_MIRROR`. |
-| `env.imageCopyMode` | `sync` | `sync` or `async`. |
+| `env.imageCopyMode` | `sync` | `sync`, `async`, or `off`. |
 | `env.imagePullTimeout` | `5m` | Pull timeout. |
 | `env.imagePullWorkers` | `2` | Number of workers executing image copies. |
 | `env.imagePullQueueSize` | `0` | In-memory pull queue size. `0` uses direct worker handoff with backpressure. |

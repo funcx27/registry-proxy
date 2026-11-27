@@ -6,45 +6,66 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/patrickmn/go-cache"
-	"gopkg.in/yaml.v3"
 )
-
-const proxyMappingPath = "/var/lib/registry/proxy-mapping.yaml"
 
 // server owns the state used by the HTTP proxy and by background image pulls.
 type server struct {
 	registryAddr string
 	options      Options
 	puller       *pullPool
-	mapping      map[string]string
+	mappings     map[string]RegistryMapping
 }
 
 func newServer(registryAddr string, opts Options) (*server, error) {
-	copier, err := newImageCopier(opts.RegistryAuthFile)
+	switch opts.CopyMode {
+	case CopyModeSync, CopyModeAsync, CopyModeOff:
+	default:
+		return nil, fmt.Errorf("invalid image copy mode %q", opts.CopyMode)
+	}
+
+	mappings, err := loadRegistryMappings(opts.RegistryMappingPath)
 	if err != nil {
-		return nil, fmt.Errorf("initialize image copier: %w", err)
+		return nil, fmt.Errorf("load registry mappings: %w", err)
 	}
 
-	cache := cache.New(opts.RepullMinInterval, time.Hour)
-	// Request waits may time out after a job is queued. Bound the copy itself
-	// as well, otherwise a stuck upstream can occupy a worker indefinitely.
-	copyWithTimeout := func(ctx context.Context, address, image string) error {
-		ctx, cancel := context.WithTimeout(ctx, opts.PullTimeout)
-		defer cancel()
-		return copier.Copy(ctx, address, image)
+	s := &server{
+		registryAddr: registryAddr,
+		options:      opts,
+		mappings:     mappings,
 	}
-	puller := newPullPool(context.Background(), opts.PullWorkers, opts.PullQueueSize, cache, copyWithTimeout)
 
-	logger.Infof("image re-pull min interval: %s", opts.RepullMinInterval)
-	logger.Infof("image pull timeout: %s", opts.PullTimeout)
-	logger.Infof("image pull workers: %d, queue size: %d", opts.PullWorkers, opts.PullQueueSize)
-	logger.Infof("image copy mode: %s", opts.CopyMode)
-	logger.Infof("dockerhub mirror: %s", opts.DockerHubMirror)
+	if opts.CopyMode == CopyModeOff {
+		// Native registry mode: routing normalization stays active, but no
+		// upstream credentials, copier, cache, or worker pool is created.
+		logger.Info("image copy mode: off (native registry mode)")
+		logRegistryMappings(mappings, logger.Debugf)
+	} else {
+		copier, err := newImageCopier(opts.RegistryAuthFile)
+		if err != nil {
+			return nil, fmt.Errorf("initialize image copier: %w", err)
+		}
+
+		cache := cache.New(opts.RepullMinInterval, time.Hour)
+		// Request waits may time out after a job is queued. Bound the copy
+		// itself as well, otherwise a stuck upstream can occupy a worker
+		// indefinitely.
+		copyWithTimeout := func(ctx context.Context, address, image, localTarget string) error {
+			ctx, cancel := context.WithTimeout(ctx, opts.PullTimeout)
+			defer cancel()
+			return copier.Copy(ctx, address, image, localTarget)
+		}
+		s.puller = newPullPool(context.Background(), opts.PullWorkers, opts.PullQueueSize, cache, copyWithTimeout)
+
+		logger.Infof("image re-pull min interval: %s", opts.RepullMinInterval)
+		logger.Infof("image pull timeout: %s", opts.PullTimeout)
+		logger.Infof("image pull workers: %d, queue size: %d", opts.PullWorkers, opts.PullQueueSize)
+		logger.Infof("image copy mode: %s", opts.CopyMode)
+		logRegistryMappings(mappings, logger.Infof)
+	}
+
 	if opts.Cleanup.Enabled {
 		logger.Infof("image clean interval: %s", opts.Cleanup.Interval)
 		logger.Infof("image clean project: %s", opts.Cleanup.Projects)
@@ -52,12 +73,7 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 		logger.Infof("image clean retain tag nums: %d", opts.Cleanup.TagRetain)
 	}
 
-	return &server{
-		registryAddr: registryAddr,
-		options:      opts,
-		puller:       puller,
-		mapping:      loadProxyMapping(),
-	}, nil
+	return s, nil
 }
 
 // Close stops the pull workers. It is safe to call more than once.
@@ -84,30 +100,21 @@ func (s *server) handler(transport http.RoundTripper) http.Handler {
 
 func (s *server) preprocessMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 匹配 /v2/<name>/manifests/<reference>，用 LastIndex 避免镜像名含 "manifests" 段时误判
-		p := r.URL.Path
-		if idx := strings.LastIndex(p, "/manifests/"); idx != -1 && strings.HasPrefix(p, "/v2/") {
-			if handler := s.manifestDispatcherCustom(r); handler != nil {
-				handler.ServeHTTP(w, r)
-				return
+		route, err := s.resolveRoute(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if route != nil {
+			route.apply(r)
+			if s.options.CopyMode != CopyModeOff && route.endpoint == "manifests" &&
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				if handler := s.manifestDispatcherCustom(r, route); handler != nil {
+					handler.ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func loadProxyMapping() map[string]string {
-	mapping := make(map[string]string)
-	b, err := os.ReadFile(proxyMappingPath)
-	if err != nil {
-		return mapping
-	}
-	if err := yaml.Unmarshal(b, &mapping); err != nil {
-		logger.Warnf("parse %s: %v", proxyMappingPath, err)
-		return make(map[string]string)
-	}
-	for k, v := range mapping {
-		logger.Infof("registry proxy host mapping: %s -> %s", k, v)
-	}
-	return mapping
 }

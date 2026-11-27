@@ -10,6 +10,17 @@ Port-forward the API for local checks:
   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "registry-proxy.fullname" . }} 5000:{{ .Values.service.port }}
   curl http://127.0.0.1:5000/v2/
 
+The proxy accepts three equivalent client forms and normalizes them to the same
+local repository:
+  path:  /v2/ghcr.io/org/app/manifests/v1
+  host:  Host: ghcr.io + /v2/org/app/manifests/v1
+  ns:    /v2/org/app/manifests/v1?ns=ghcr.io
+
+The optional routing table is stored at
+/var/lib/registry/registry-mapping.yaml inside the container, derived from the
+registry configuration's filesystem root. Set REGISTRY_MAPPING_PATH to override
+it.
+
 The Service also exposes port 443 to the same plain-HTTP backend. This is not
 a TLS endpoint: it lets clients that probe HTTPS first fail fast and retry over
 HTTP. Ingress uses the HTTP service port above; optional Ingress TLS is
@@ -24,18 +35,6 @@ Registry data is stored in a PersistentVolumeClaim:
   {{ default (include "registry-proxy.fullname" .) .Values.persistence.existingClaim }}
 {{- else }}
 Registry data is stored in an emptyDir and will be lost when the pod is removed.
-{{- end }}
-
-The proxy chooses the upstream registry from the Docker request Host header.
-Route the upstream hostname (or a mapped hostname from config.proxyMapping) to
-this Service with DNS or an Ingress. Do not point the upstream hostname back at
-the proxy without a proxyMapping entry, or the proxy will loop.
-
-{{- if .Values.env.dockerHubMirror }}
-Docker Hub mirror is enabled ({{ .Values.env.dockerHubMirror }}).
-For a local test through the port-forward, use the service IP form so the
-library-image mirror path is selected:
-  docker pull 127.0.0.1:5000/library/nginx:latest
 {{- end }}
 
 {{- if .Values.upstreamAuth.enabled }}

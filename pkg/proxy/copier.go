@@ -67,22 +67,19 @@ func (c *imageCopier) client(registryAddr string) *regclient.RegClient {
 	return rc
 }
 
-// Copy makes image available in the local registry. The image string may use
-// either :tag or @digest. Index manifests are stored unchanged so the top-level
-// digest remains identical to the upstream registry; the referenced children
-// are intentionally not copied until requested.
-func (c *imageCopier) Copy(ctx context.Context, registryAddr, image string) error {
+// Copy makes image available in the local registry under localTarget, which
+// is a repository plus :tag or @digest. The source and local repository may
+// differ: Host/ns requests use a namespaced local path while the source keeps
+// the upstream repository layout. Index manifests are stored unchanged so the
+// top-level digest remains identical to the upstream registry; the referenced
+// children are intentionally not copied until requested.
+func (c *imageCopier) Copy(ctx context.Context, registryAddr, image, localTarget string) error {
 	src, err := ref.New(image)
 	if err != nil {
 		return fmt.Errorf("parse source image %q: %w", image, err)
 	}
 
-	dstName := registryAddr + "/" + src.Repository
-	if src.Digest != "" {
-		dstName += "@" + src.Digest
-	} else {
-		dstName += ":" + src.Tag
-	}
+	dstName := registryAddr + "/" + localTarget
 	dst, err := ref.New(dstName)
 	if err != nil {
 		return fmt.Errorf("parse destination image %q: %w", dstName, err)

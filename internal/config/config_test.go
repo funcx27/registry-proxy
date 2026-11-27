@@ -48,8 +48,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if opts.RegistryAuthFile != "" {
 		t.Fatalf("RegistryAuthFile = %q, want empty", opts.RegistryAuthFile)
 	}
-	if opts.DockerHubMirror != "" {
-		t.Fatalf("DockerHubMirror = %q, want empty", opts.DockerHubMirror)
+	if opts.RegistryMappingPath != "" {
+		t.Fatalf("RegistryMappingPath = %q, want empty", opts.RegistryMappingPath)
 	}
 
 	cleanup := opts.Cleanup
@@ -74,7 +74,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	cfg, err := LoadFromEnv(lookupFrom(map[string]string{
 		"REGISTRY_CONFIGURATION_PATH": " /etc/registry/config.yml ",
 		"APP_LOG_LEVEL":               "debug",
-		"DOCKERHUB_MIRROR":            "mirror.example",
+		"REGISTRY_MAPPING_PATH":       "/etc/registry/registry-mapping.yaml",
 		"IMAGE_COPY_MODE":             "async",
 		"IMAGE_PULL_TIMEOUT":          "90s",
 		"IMAGE_PULL_WORKERS":          "4",
@@ -116,8 +116,8 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	if opts.RegistryAuthFile != "/run/auth.json" {
 		t.Fatalf("RegistryAuthFile = %q", opts.RegistryAuthFile)
 	}
-	if opts.DockerHubMirror != "mirror.example" {
-		t.Fatalf("DockerHubMirror = %q", opts.DockerHubMirror)
+	if opts.RegistryMappingPath != "/etc/registry/registry-mapping.yaml" {
+		t.Fatalf("RegistryMappingPath = %q", opts.RegistryMappingPath)
 	}
 
 	cleanup := opts.Cleanup
@@ -135,6 +135,16 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	}
 	if want := []string{"team/a", "library"}; !slices.Equal(cleanup.Projects, want) {
 		t.Fatalf("Cleanup.Projects = %v, want %v", cleanup.Projects, want)
+	}
+}
+
+func TestLoadFromEnvAcceptsOffCopyMode(t *testing.T) {
+	cfg, err := LoadFromEnv(lookupFrom(map[string]string{"IMAGE_COPY_MODE": "off"}))
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Proxy.CopyMode != proxy.CopyModeOff {
+		t.Fatalf("CopyMode = %q, want %q", cfg.Proxy.CopyMode, proxy.CopyModeOff)
 	}
 }
 

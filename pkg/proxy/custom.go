@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path"
@@ -85,10 +84,15 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 	}
 }
 
-func (s *server) manifestDispatcherCustom(r *http.Request) http.Handler {
+func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute) http.Handler {
+	image, ok := route.sourceImage()
+	if !ok {
+		return nil
+	}
+
 	switch s.options.CopyMode {
 	case CopyModeSync:
-		if err := s.imageHandler(r); err != nil {
+		if err := s.imageHandler(r, route, image); err != nil {
 			logger.Errorf("%s pull image failed: %v", r.RemoteAddr, err)
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
@@ -104,7 +108,7 @@ func (s *server) manifestDispatcherCustom(r *http.Request) http.Handler {
 		// ServeHTTP returns.
 		asyncRequest := r.Clone(context.Background())
 		go func() {
-			if err := s.imageHandler(asyncRequest); err != nil {
+			if err := s.imageHandler(asyncRequest, route, image); err != nil {
 				logger.Errorf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)
 			}
 		}()
@@ -112,62 +116,14 @@ func (s *server) manifestDispatcherCustom(r *http.Request) http.Handler {
 	return nil
 }
 
-func (s *server) imageHandler(r *http.Request) error {
-	image, ok := s.manifestImage(r)
-	if !ok {
-		return nil
-	}
-
+func (s *server) imageHandler(r *http.Request, route *registryRoute, image string) error {
 	ctx, cancel := context.WithTimeout(r.Context(), s.options.PullTimeout)
 	defer cancel()
-	if err := s.puller.ensure(ctx, s.registryAddr, image); err != nil {
+	localTarget := localTarget(route.localRepository, route.reference)
+	if err := s.puller.ensure(ctx, s.registryAddr, image, localTarget); err != nil {
 		return fmt.Errorf("ensure image %s: %w", image, err)
 	}
 	return nil
-}
-
-// manifestImage converts a manifest request into the upstream image reference.
-// A tag request pulls only the top-level manifest; a digest request pulls that
-// exact child manifest and its blobs.
-func (s *server) manifestImage(r *http.Request) (string, bool) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return "", false
-	}
-
-	imagePath := strings.TrimPrefix(r.URL.Path, "/v2")
-	lastIdx := strings.LastIndex(imagePath, "/manifests/")
-	if lastIdx == -1 {
-		return "", false
-	}
-
-	repository := strings.TrimPrefix(imagePath[:lastIdx], "/")
-	reference := imagePath[lastIdx+len("/manifests/"):]
-	if repository == "" || reference == "" {
-		return "", false
-	}
-
-	host := s.proxyHostMapping(r.Host)
-	mirror := s.options.DockerHubMirror
-	if isIPHost(host) && (mirror == "" || !strings.HasPrefix(imagePath, "/library/")) {
-		return "", false
-	}
-	if mirror != "" && strings.HasPrefix(repository, "library/") {
-		host = mirror
-	}
-
-	separator := ":"
-	if strings.Contains(reference, ":") {
-		separator = "@"
-	}
-	return host + "/" + repository + separator + reference, true
-}
-
-func isIPHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	return net.ParseIP(strings.Trim(host, "[]")) != nil
 }
 
 func deleteImageTagPath(config *configuration.Configuration, project string, retain int, deleteBefore time.Duration, dryRun bool) (preDeletePath []string, err error) {
@@ -233,11 +189,4 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 		}
 	}
 	return
-}
-
-func (s *server) proxyHostMapping(host string) string {
-	if s.mapping[host] != "" {
-		return s.mapping[host]
-	}
-	return host
 }

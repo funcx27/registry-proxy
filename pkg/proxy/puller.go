@@ -16,17 +16,18 @@ var errPullPoolClosed = errors.New("image pull pool closed")
 
 type imagePullJob struct {
 	registryAddr string
-	image        string
+	sourceImage  string
+	localTarget  string
 	done         chan error
 }
 
-// pullPool coalesces concurrent pulls for the same image and executes the
-// actual copies on a bounded set of workers.
+// pullPool coalesces concurrent pulls for the same local target and executes
+// the actual copies on a bounded set of workers.
 type pullPool struct {
 	group  singleflight.Group
 	jobs   chan imagePullJob
 	cache  *cache.Cache
-	copyFn func(context.Context, string, string) error
+	copyFn func(context.Context, string, string, string) error
 
 	// closeMu guards the closed flag and is held across job handoff so Close
 	// cannot stop the workers while a producer is mid-send.
@@ -41,7 +42,7 @@ func newPullPool(
 	ctx context.Context,
 	workers, queueSize int,
 	cache *cache.Cache,
-	copyFn func(context.Context, string, string) error,
+	copyFn func(context.Context, string, string, string) error,
 ) *pullPool {
 	if workers < 1 {
 		workers = 1
@@ -88,31 +89,30 @@ func (p *pullPool) Close() {
 	}
 }
 
-// ensure makes the image available locally. Concurrent callers for the same
-// image share a single worker job and the same result.
-func (p *pullPool) ensure(ctx context.Context, registryAddr, image string) error {
-	if p.isPulled(image) {
+// ensure makes sourceImage available under localTarget. Concurrent callers for
+// the same local target share a single worker job and the same result.
+func (p *pullPool) ensure(ctx context.Context, registryAddr, sourceImage, localTarget string) error {
+	key := pullCacheKey(registryAddr, localTarget)
+	if p.isPulled(key) {
 		return nil
 	}
 
-	// The flight key must match the cache key: the cache is keyed by image
-	// only, so keying the flight by registry address would let two callers
-	// pull the same image concurrently when the pool is shared.
-	result := p.group.DoChan(image, func() (any, error) {
-		if p.isPulled(image) {
+	result := p.group.DoChan(key, func() (any, error) {
+		if p.isPulled(key) {
 			return nil, nil
 		}
 
 		job := imagePullJob{
 			registryAddr: registryAddr,
-			image:        image,
+			sourceImage:  sourceImage,
+			localTarget:  localTarget,
 			done:         make(chan error, 1),
 		}
 
 		if err := p.enqueue(ctx, job); err != nil {
 			return nil, err
 		}
-		logger.Debugf("pulling image: %s", image)
+		logger.Debugf("pulling image: %s", sourceImage)
 
 		// Once the job is queued, keep the flight alive until the worker
 		// finishes. A timed-out caller exits independently, but later callers
@@ -126,6 +126,10 @@ func (p *pullPool) ensure(ctx context.Context, registryAddr, image string) error
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func pullCacheKey(registryAddr, localTarget string) string {
+	return registryAddr + "/" + localTarget
 }
 
 // enqueue hands a job to a worker. The read lock is held for the whole send so
@@ -163,32 +167,33 @@ func (p *pullPool) worker(ctx context.Context) {
 func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("pull image %s panic: %v", job.image, r)
+			err = fmt.Errorf("pull image %s panic: %v", job.sourceImage, r)
 		}
 	}()
 
-	// A pull queued behind another job for the same image can become a no-op.
-	if p.isPulled(job.image) {
+	key := pullCacheKey(job.registryAddr, job.localTarget)
+	// A pull queued behind another job for the same target can become a no-op.
+	if p.isPulled(key) {
 		return nil
 	}
 
 	begin := time.Now()
-	if err := p.copyFn(ctx, job.registryAddr, job.image); err != nil {
-		logger.Errorf("pull image %s failed after %s: %v", job.image, time.Since(begin), err)
-		return fmt.Errorf("pull image %s: %w", job.image, err)
+	if err := p.copyFn(ctx, job.registryAddr, job.sourceImage, job.localTarget); err != nil {
+		logger.Errorf("pull image %s failed after %s: %v", job.sourceImage, time.Since(begin), err)
+		return fmt.Errorf("pull image %s: %w", job.sourceImage, err)
 	}
 
 	if p.cache != nil {
-		p.cache.SetDefault(job.image, struct{}{})
+		p.cache.SetDefault(key, struct{}{})
 	}
 	// A single user-facing pull fans out into additional copies of the
 	// digest references referenced by the tag (index and child manifests).
 	// Those are an implementation detail, so only the tag-level completion
 	// stays at info level.
-	if isDigestReference(job.image) {
-		logger.Debugf("pulled image: %s in %s", job.image, time.Since(begin))
+	if isDigestReference(job.sourceImage) {
+		logger.Debugf("pulled image: %s in %s", job.sourceImage, time.Since(begin))
 	} else {
-		logger.Infof("pulled image: %s in %s", job.image, time.Since(begin))
+		logger.Infof("pulled image: %s in %s", job.sourceImage, time.Since(begin))
 	}
 	return nil
 }
@@ -199,10 +204,10 @@ func isDigestReference(image string) bool {
 	return strings.Contains(image, "@")
 }
 
-func (p *pullPool) isPulled(image string) bool {
+func (p *pullPool) isPulled(key string) bool {
 	if p.cache == nil {
 		return false
 	}
-	_, ok := p.cache.Get(image)
+	_, ok := p.cache.Get(key)
 	return ok
 }

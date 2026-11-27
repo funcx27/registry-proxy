@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/distribution/distribution/v3/configuration"
 )
 
 func TestPickLoopbackAddr(t *testing.T) {
@@ -23,6 +25,47 @@ func TestPickLoopbackAddr(t *testing.T) {
 	}
 	if port == "" || port == "0" {
 		t.Fatalf("port = %q, want a kernel-assigned port", port)
+	}
+}
+
+func TestDefaultRegistryMappingPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		storage configuration.Storage
+		want    string
+	}{
+		{
+			name: "filesystem root",
+			storage: configuration.Storage{
+				"filesystem": configuration.Parameters{"rootdirectory": "/srv/registry"},
+			},
+			want: "/srv/registry/registry-mapping.yaml",
+		},
+		{
+			name: "relative filesystem root",
+			storage: configuration.Storage{
+				"filesystem": configuration.Parameters{"rootdirectory": "data/registry"},
+			},
+			want: filepath.Join("data/registry", "registry-mapping.yaml"),
+		},
+		{
+			name:    "missing rootdirectory",
+			storage: configuration.Storage{"filesystem": configuration.Parameters{}},
+			want:    "",
+		},
+		{
+			name:    "non-filesystem driver",
+			storage: configuration.Storage{"inmemory": configuration.Parameters{}},
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &configuration.Configuration{Storage: tt.storage}
+			if got := defaultRegistryMappingPath(config); got != tt.want {
+				t.Fatalf("defaultRegistryMappingPath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

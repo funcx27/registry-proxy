@@ -28,7 +28,7 @@ arm64:
 push: amd64 arm64
 	$(DOCKER_BUILD) -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
 test: amd64
-	docker rm -f test; docker run --name test -e DOCKERHUB_MIRROR=registry.dockermirror.com -d -p80:80 $(IMAGE_REPO):$(VERSION)
+	docker rm -f test; docker run --name test -e IMAGE_COPY_MODE=off -d -p80:80 $(IMAGE_REPO):$(VERSION)
 	docker logs -f test
 
 E2E_DOCKER_PROXY ?= http://127.0.0.1:10808

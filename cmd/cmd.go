@@ -6,10 +6,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	appconfig "registry-proxy/internal/config"
 	"registry-proxy/internal/logging"
 	"registry-proxy/pkg/proxy"
 	"registry-proxy/pkg/version"
+	"strings"
 
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/registry"
@@ -41,6 +43,13 @@ var ServeCmd = &cobra.Command{
 			// nolint:errcheck
 			cmd.Usage()
 			os.Exit(1)
+		}
+
+		// Derive the mapping file location from the registry configuration so
+		// binary deployments that relocate storage keep the mapping next to the
+		// data instead of depending on a second hard-coded path.
+		if appCfg.Proxy.RegistryMappingPath == "" {
+			appCfg.Proxy.RegistryMappingPath = defaultRegistryMappingPath(config)
 		}
 
 		// The proxy is the only externally reachable endpoint. Keep the
@@ -105,6 +114,22 @@ var ServeCmd = &cobra.Command{
 			}
 		}
 	},
+}
+
+// defaultRegistryMappingPath returns the mapping file path implied by the
+// registry's filesystem storage root. It returns an empty string for drivers
+// that do not expose a filesystem root; operators can still set
+// REGISTRY_MAPPING_PATH explicitly in that case.
+func defaultRegistryMappingPath(config *configuration.Configuration) string {
+	root, ok := config.Storage.Parameters()["rootdirectory"].(string)
+	if !ok {
+		return ""
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "registry-mapping.yaml")
 }
 
 func pickLoopbackAddr() (string, error) {

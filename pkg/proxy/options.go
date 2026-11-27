@@ -11,18 +11,34 @@ const (
 	CopyModeSync CopyMode = "sync"
 	// CopyModeAsync starts the copy in the background and proxies immediately.
 	CopyModeAsync CopyMode = "async"
+	// CopyModeOff disables on-demand upstream copying. The proxy still
+	// normalizes Host/ns routes so every entry point addresses the same local
+	// repository, but it behaves like a plain local registry.
+	CopyModeOff CopyMode = "off"
 )
+
+// RegistryMapping describes how one upstream registry is addressed.
+//
+// The map key in the mapping file is the logical registry name used in local
+// repository paths, for example "ghcr.io". Registry may point at a different
+// host or another proxy, optionally with a repository prefix. DefaultNamespace
+// is prepended to single-component repositories, mirroring Docker Hub's
+// "library" convention.
+type RegistryMapping struct {
+	Registry         string `yaml:"registry,omitempty"`
+	DefaultNamespace string `yaml:"defaultNamespace,omitempty"`
+}
 
 // Options are the runtime knobs that affect image pulls and cleanup.
 type Options struct {
-	CopyMode          CopyMode
-	DockerHubMirror   string
-	PullTimeout       time.Duration
-	PullWorkers       int
-	PullQueueSize     int
-	RepullMinInterval time.Duration
-	RegistryAuthFile  string
-	Cleanup           CleanupOptions
+	CopyMode            CopyMode
+	RegistryMappingPath string
+	PullTimeout         time.Duration
+	PullWorkers         int
+	PullQueueSize       int
+	RepullMinInterval   time.Duration
+	RegistryAuthFile    string
+	Cleanup             CleanupOptions
 }
 
 // CleanupOptions controls the periodic tag cleanup job.

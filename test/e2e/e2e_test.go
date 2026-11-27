@@ -111,11 +111,20 @@ type proxyProcess struct {
 
 func startProxy(t *testing.T, extraEnv map[string]string) *proxyProcess {
 	t.Helper()
+	return startProxyIn(t, t.TempDir(), extraEnv)
+}
+
+// startProxyIn reuses root so a test can stop one mode and restart the same
+// registry data under another mode.
+func startProxyIn(t *testing.T, root string, extraEnv map[string]string) *proxyProcess {
+	t.Helper()
 
 	requireDockerProxy(t)
 
-	root := t.TempDir()
 	storageRoot := filepath.Join(root, "registry")
+	if err := os.MkdirAll(storageRoot, 0o755); err != nil {
+		t.Fatalf("create storage root: %v", err)
+	}
 	addr := freeAddr(t)
 	configPath := filepath.Join(root, "config.yml")
 	config := fmt.Sprintf(`version: 0.1
@@ -144,12 +153,22 @@ validation:
 		t.Fatalf("write config: %v", err)
 	}
 
+	// Rely on the application default: <storage rootdirectory>/registry-mapping.yaml.
+	// This pins the derivation from the registry configuration instead of a
+	// separately configured path.
+	mappingPath := filepath.Join(storageRoot, "registry-mapping.yaml")
+	mapping := `docker.io:
+  defaultNamespace: library
+`
+	if err := os.WriteFile(mappingPath, []byte(mapping), 0o600); err != nil {
+		t.Fatalf("write registry mapping: %v", err)
+	}
+
 	env := map[string]string{
 		// The copy lifecycle asserts on debug-level "pulling image" lines so a
 		// single fan-out can be counted without scraping registry internals.
 		"APP_LOG_LEVEL":             "debug",
 		"IMAGE_COPY_MODE":           "sync",
-		"DOCKERHUB_MIRROR":          upstreamHost,
 		"IMAGE_PULL_TIMEOUT":        "2m",
 		"IMAGE_REPULL_MIN_INTERVAL": "1h",
 		"IMAGE_PULL_WORKERS":        "2",
@@ -205,7 +224,6 @@ func stopProxy(cmd *exec.Cmd) {
 func cleanEnv() []string {
 	blocked := map[string]struct{}{
 		"APP_LOG_LEVEL":               {},
-		"DOCKERHUB_MIRROR":            {},
 		"HTTP_PROXY":                  {},
 		"HTTPS_PROXY":                 {},
 		"IMAGE_CLEAN_BEFORE_DAYS":     {},
@@ -221,6 +239,7 @@ func cleanEnv() []string {
 		"OTEL_TRACES_EXPORTER":        {},
 		"REGISTRY_AUTH_FILE":          {},
 		"REGISTRY_CONFIGURATION_PATH": {},
+		"REGISTRY_MAPPING_PATH":       {},
 		"http_proxy":                  {},
 		"https_proxy":                 {},
 		"no_proxy":                    {},
@@ -513,6 +532,103 @@ func TestPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 	status, _, body := doManifestRequest(t, p, http.MethodHead, "3.20")
 	if status != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusGatewayTimeout, body)
+	}
+}
+
+func TestHostAndPathModesShareRepository(t *testing.T) {
+	p := startProxy(t, nil)
+
+	const tag = "3.20"
+	hostStatus, hostHeaders, hostBody := doManifestRequest(t, p, http.MethodGet, tag)
+	if hostStatus != http.StatusOK {
+		t.Fatalf("host mode status = %d, want %d; body=%s", hostStatus, http.StatusOK, hostBody)
+	}
+
+	pathURL := "http://" + p.addr + "/v2/" + upstreamHost + "/library/alpine/manifests/" + tag
+	req, err := http.NewRequest(http.MethodGet, pathURL, nil)
+	if err != nil {
+		t.Fatalf("new path mode request: %v", err)
+	}
+	req.Header.Set("Accept", manifestAccept)
+	resp, err := proxyClient().Do(req)
+	if err != nil {
+		t.Fatalf("path mode request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	pathBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read path mode body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("path mode status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, pathBody)
+	}
+	if got, want := resp.Header.Get("Docker-Content-Digest"), hostHeaders.Get("Docker-Content-Digest"); got != want {
+		t.Fatalf("path mode digest = %q, want host mode digest %q", got, want)
+	}
+	if digestOf(pathBody) != digestOf(hostBody) {
+		t.Fatal("path mode and host mode returned different manifest bytes")
+	}
+
+	needle := "pulling image: " + upstreamHost + "/library/alpine:" + tag
+	if got := strings.Count(p.logs.String(), needle); got != 1 {
+		t.Fatalf("copy log count = %d, want 1; logs:\n%s", got, p.logs.String())
+	}
+}
+
+// TestOffModeRoutesToExistingRepository pins that Host/ns path normalization
+// is a routing feature and remains active when on-demand copying is disabled.
+// A sync instance seeds the local repository, then an off-mode instance serves
+// the same digest through both Host and path entry points without pulling.
+func TestOffModeRoutesToExistingRepository(t *testing.T) {
+	root := t.TempDir()
+
+	seeding := startProxyIn(t, root, nil)
+	status, seedHeaders, body := doManifestRequest(t, seeding, http.MethodHead, "3.20")
+	if status != http.StatusOK {
+		t.Fatalf("seed status = %d, want %d; body=%s", status, http.StatusOK, body)
+	}
+	digest := seedHeaders.Get("Docker-Content-Digest")
+	if digest == "" {
+		t.Fatal("seed response has no Docker-Content-Digest header")
+	}
+	stopProxy(seeding.cmd)
+
+	off := startProxyIn(t, root, map[string]string{"IMAGE_COPY_MODE": "off"})
+	if !strings.Contains(off.logs.String(), "native registry mode") {
+		t.Fatalf("off mode startup line is missing; logs:\n%s", off.logs.String())
+	}
+
+	// Host mode: Host docker.io, path /v2/library/alpine/manifests/<tag>.
+	status, hostHeaders, body := doManifestRequest(t, off, http.MethodHead, "3.20")
+	if status != http.StatusOK {
+		t.Fatalf("host mode status = %d, want %d; body=%s", status, http.StatusOK, body)
+	}
+	if got := hostHeaders.Get("Docker-Content-Digest"); got != digest {
+		t.Fatalf("host mode digest = %q, want %q", got, digest)
+	}
+
+	// Path mode: /v2/docker.io/library/alpine/... must resolve to the same
+	// local repository that Host mode wrote to.
+	pathURL := "http://" + off.addr + "/v2/" + upstreamHost + "/library/alpine/manifests/3.20"
+	req, err := http.NewRequest(http.MethodHead, pathURL, nil)
+	if err != nil {
+		t.Fatalf("new path mode request: %v", err)
+	}
+	req.Header.Set("Accept", manifestAccept)
+	resp, err := proxyClient().Do(req)
+	if err != nil {
+		t.Fatalf("path mode request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("path mode status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Docker-Content-Digest"); got != digest {
+		t.Fatalf("path mode digest = %q, want %q", got, digest)
+	}
+
+	if strings.Contains(off.logs.String(), "pulling image") {
+		t.Fatalf("off mode attempted a pull; logs:\n%s", off.logs.String())
 	}
 }
 

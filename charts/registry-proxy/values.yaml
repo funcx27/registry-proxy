@@ -137,16 +137,32 @@ upstreamAuth:
   # chart containing them.
   dockerConfigFile: ""
 
-# Optional upstream host rewrite rules, written to /var/lib/registry/proxy-mapping.yaml.
-# Example:
-# config:
-#   proxyMapping:
-#     docker.io: registry.dockermirror.com
+# Registry routing table. The application reads
+# <storage rootdirectory>/registry-mapping.yaml by default, which is
+# /var/lib/registry/registry-mapping.yaml for the container image.
+#
+# Keys are real registry domains. The proxy accepts three equivalent client
+# forms and normalizes all of them to the same local repository:
+#
+#   path:  /v2/ghcr.io/org/app/manifests/v1
+#   host:  Host: ghcr.io + /v2/org/app/manifests/v1
+#   ns:    /v2/org/app/manifests/v1?ns=ghcr.io
+#
+# docker.io uses the conventional "library" namespace for single-component
+# repositories such as docker.io/alpine.
+#
+# registry optionally points at a different upstream host, or at another proxy
+# with a repository prefix. Leave it empty to use the map key itself.
 config:
-  proxyMapping: {}
+  registryMapping:
+    docker.io:
+      defaultNamespace: library
+    ghcr.io: {}
+    registry.k8s.io: {}
+    quay.io: {}
   # Mount an existing ConfigMap instead of generating one. It must contain the
-  # proxy-mapping.yaml key.
-  existingProxyMappingConfigMap: ""
+  # registry-mapping.yaml key.
+  existingRegistryMappingConfigMap: ""
 
 # Optional tag cleanup job executed by the application.
 imageClean:
@@ -163,7 +179,9 @@ env:
   logLevel: error
   # Level of registry-proxy's own logger (pull progress, cleanup, ...).
   appLogLevel: info
-  dockerHubMirror: ""
+  # sync waits for the copy before proxying; async copies in the background;
+  # off disables on-demand copying and serves the local registry only. Even in
+  # off mode, path/host/ns requests normalize to the same local repository.
   imageCopyMode: sync
   imagePullTimeout: 5m
   imagePullWorkers: 2

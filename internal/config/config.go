@@ -17,7 +17,7 @@ const (
 	envAppLogLevel                      = "APP_LOG_LEVEL"
 	envRegistryConfigurationPath        = "REGISTRY_CONFIGURATION_PATH"
 	envRegistryAuthFile                 = "REGISTRY_AUTH_FILE"
-	envDockerHubMirror                  = "DOCKERHUB_MIRROR"
+	envRegistryMappingPath              = "REGISTRY_MAPPING_PATH"
 	envImageCopyMode                    = "IMAGE_COPY_MODE"
 	envImagePullTimeout                 = "IMAGE_PULL_TIMEOUT"
 	envImagePullWorkers                 = "IMAGE_PULL_WORKERS"
@@ -56,11 +56,11 @@ func LoadFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		RegistryConfigurationPath: envValue(lookup, envRegistryConfigurationPath),
 		AppLogLevel:               envValueOrDefault(lookup, envAppLogLevel, defaultAppLogLevel),
 		Proxy: proxy.Options{
-			DockerHubMirror:   envValue(lookup, envDockerHubMirror),
-			PullWorkers:       defaultPullWorkers,
-			PullQueueSize:     defaultPullQueueSize,
-			RepullMinInterval: defaultRepullMinInterval,
-			RegistryAuthFile:  envValue(lookup, envRegistryAuthFile),
+			RegistryMappingPath: envValue(lookup, envRegistryMappingPath),
+			PullWorkers:         defaultPullWorkers,
+			PullQueueSize:       defaultPullQueueSize,
+			RepullMinInterval:   defaultRepullMinInterval,
+			RegistryAuthFile:    envValue(lookup, envRegistryAuthFile),
 			Cleanup: proxy.CleanupOptions{
 				Interval:     defaultCleanInterval,
 				DeleteBefore: defaultCleanBeforeDays * 24 * time.Hour,
@@ -165,8 +165,10 @@ func parseCopyMode(raw string) (proxy.CopyMode, error) {
 		return proxy.CopyModeSync, nil
 	case proxy.CopyModeAsync:
 		return proxy.CopyModeAsync, nil
+	case proxy.CopyModeOff:
+		return proxy.CopyModeOff, nil
 	default:
-		return "", fmt.Errorf("%s=%q: must be %q or %q", envImageCopyMode, raw, proxy.CopyModeSync, proxy.CopyModeAsync)
+		return "", fmt.Errorf("%s=%q: must be %q, %q, or %q", envImageCopyMode, raw, proxy.CopyModeSync, proxy.CopyModeAsync, proxy.CopyModeOff)
 	}
 }
 

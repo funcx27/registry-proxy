@@ -27,7 +27,7 @@ func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		atomic.AddInt32(&calls, 1)
 		startOnce.Do(func() { close(started) })
 		<-release
@@ -44,7 +44,7 @@ func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
 	for i := 0; i < requests; i++ {
 		go func() {
 			defer wg.Done()
-			errs <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest")
+			errs <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest")
 		}()
 	}
 
@@ -73,7 +73,7 @@ func TestPullPoolRetriesAfterFailure(t *testing.T) {
 	cache := cache.New(time.Minute, time.Minute)
 
 	var calls int32
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			return errors.New("upstream unavailable")
 		}
@@ -83,10 +83,10 @@ func TestPullPoolRetriesAfterFailure(t *testing.T) {
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
 	t.Cleanup(pool.Close)
 
-	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest"); err == nil {
+	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest"); err == nil {
 		t.Fatal("first ensure() error = nil, want failure")
 	}
-	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest"); err != nil {
+	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest"); err != nil {
 		t.Fatalf("second ensure() error = %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -98,10 +98,10 @@ func TestPullPoolSkipsCachedImage(t *testing.T) {
 	ctx := context.Background()
 	cache := cache.New(time.Minute, time.Minute)
 	const image = "docker.io/library/nginx:latest"
-	cache.SetDefault(image, struct{}{})
+	cache.SetDefault(pullCacheKey("127.0.0.1:5000", image), struct{}{})
 
 	var calls int32
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		atomic.AddInt32(&calls, 1)
 		return nil
 	}
@@ -109,7 +109,7 @@ func TestPullPoolSkipsCachedImage(t *testing.T) {
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
 	t.Cleanup(pool.Close)
 
-	if err := pool.ensure(ctx, "127.0.0.1:5000", image); err != nil {
+	if err := pool.ensure(ctx, "127.0.0.1:5000", image, image); err != nil {
 		t.Fatalf("ensure() error = %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 0 {
@@ -121,14 +121,14 @@ func TestPullPoolPropagatesPanicAsError(t *testing.T) {
 	ctx := context.Background()
 	cache := cache.New(time.Minute, time.Minute)
 
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		panic("boom")
 	}
 
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
 	t.Cleanup(pool.Close)
 
-	err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest")
+	err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest")
 	if err == nil {
 		t.Fatal("ensure() error = nil, want panic converted to error")
 	}
@@ -149,7 +149,7 @@ func TestPullPoolQueueWaitHonorsContext(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
@@ -160,7 +160,7 @@ func TestPullPoolQueueWaitHonorsContext(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest")
+		firstDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest")
 	}()
 
 	select {
@@ -171,7 +171,7 @@ func TestPullPoolQueueWaitHonorsContext(t *testing.T) {
 
 	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
-	err := pool.ensure(waitCtx, "127.0.0.1:5000", "docker.io/library/busybox:latest")
+	err := pool.ensure(waitCtx, "127.0.0.1:5000", "docker.io/library/busybox:latest", "docker.io/library/busybox:latest")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued ensure() error = %v, want context deadline exceeded", err)
 	}
@@ -194,7 +194,7 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string) error {
+	syncFn := func(context.Context, string, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
@@ -203,7 +203,9 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 	pool := newPullPool(ctx, 1, 1, cache, syncFn)
 
 	firstDone := make(chan error, 1)
-	go func() { firstDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest") }()
+	go func() {
+		firstDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest")
+	}()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -211,7 +213,9 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 	}
 
 	secondDone := make(chan error, 1)
-	go func() { secondDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/busybox:latest") }()
+	go func() {
+		secondDone <- pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/busybox:latest", "docker.io/library/busybox:latest")
+	}()
 
 	deadline := time.Now().Add(time.Second)
 	for len(pool.jobs) == 0 && time.Now().Before(deadline) {
@@ -249,7 +253,7 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 		t.Fatal("queued ensure() blocked after Close()")
 	}
 
-	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/alpine:latest"); !errors.Is(err, errPullPoolClosed) {
+	if err := pool.ensure(ctx, "127.0.0.1:5000", "docker.io/library/alpine:latest", "docker.io/library/alpine:latest"); !errors.Is(err, errPullPoolClosed) {
 		t.Fatalf("ensure() after Close() error = %v, want errPullPoolClosed", err)
 	}
 
@@ -266,7 +270,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		var startOnce sync.Once
-		syncFn := func(context.Context, string, string) error {
+		syncFn := func(context.Context, string, string, string) error {
 			atomic.AddInt32(&calls, 1)
 			startOnce.Do(func() { close(started) })
 			<-release
@@ -280,7 +284,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 		leaderCtx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		leaderDone := make(chan error, 1)
-		go func() { leaderDone <- pool.ensure(leaderCtx, "127.0.0.1:5000", "repo/app:1") }()
+		go func() { leaderDone <- pool.ensure(leaderCtx, "127.0.0.1:5000", "repo/app:1", "repo/app:1") }()
 
 		<-started
 		time.Sleep(2 * time.Second) // advances the fake clock past the leader deadline
@@ -295,7 +299,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 		}
 
 		followerDone := make(chan error, 1)
-		go func() { followerDone <- pool.ensure(t.Context(), "127.0.0.1:5000", "repo/app:1") }()
+		go func() { followerDone <- pool.ensure(t.Context(), "127.0.0.1:5000", "repo/app:1", "repo/app:1") }()
 		synctest.Wait() // follower has joined the still-running flight
 
 		close(release)
@@ -314,7 +318,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 func TestPullPoolCloseDoesNotStrandCallers(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		pool := newPullPool(context.Background(), 2, 2, cache.New(time.Minute, time.Minute),
-			func(context.Context, string, string) error { return nil })
+			func(context.Context, string, string, string) error { return nil })
 
 		const callers = 16
 		var wg sync.WaitGroup
@@ -322,7 +326,8 @@ func TestPullPoolCloseDoesNotStrandCallers(t *testing.T) {
 		for i := 0; i < callers; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := pool.ensure(context.Background(), "127.0.0.1:5000", fmt.Sprintf("repo/app:%d", i))
+				image := fmt.Sprintf("repo/app:%d", i)
+				err := pool.ensure(context.Background(), "127.0.0.1:5000", image, image)
 				if err != nil && !errors.Is(err, errPullPoolClosed) {
 					t.Errorf("ensure() error = %v, want nil or errPullPoolClosed", err)
 				}
