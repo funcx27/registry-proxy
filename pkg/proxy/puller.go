@@ -34,7 +34,7 @@ type pullPool struct {
 	group  singleflight.Group
 	jobs   chan imagePullJob
 	cache  *cache.Cache
-	copyFn func(context.Context, string, string, string) error
+	copyFn func(context.Context, string, string, string) (copyResult, error)
 
 	// closeMu guards the closed flag and is held across job handoff so Close
 	// cannot stop the workers while a producer is mid-send.
@@ -49,7 +49,7 @@ func newPullPool(
 	ctx context.Context,
 	workers, queueSize int,
 	cache *cache.Cache,
-	copyFn func(context.Context, string, string, string) error,
+	copyFn func(context.Context, string, string, string) (copyResult, error),
 ) *pullPool {
 	if workers < 1 {
 		workers = 1
@@ -187,7 +187,8 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 
 	begin := time.Now()
 	copyCtx := contextWithLoopChain(ctx, job.loopChain)
-	if err := p.copyFn(copyCtx, job.registryAddr, job.sourceImage, job.localTarget); err != nil {
+	result, err := p.copyFn(copyCtx, job.registryAddr, job.sourceImage, job.localTarget)
+	if err != nil {
 		logPullFailure(job.sourceImage, time.Since(begin), err)
 		return fmt.Errorf("pull image %s: %w", job.sourceImage, err)
 	}
@@ -202,12 +203,56 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	// the exception: it dominates the latency the user observes, so report it
 	// even though the tag-level line finished long before.
 	elapsed := time.Since(begin)
-	if isDigestReference(job.sourceImage) && elapsed < slowDigestPull {
-		logger.Debugf("pulled image: %s in %s", job.sourceImage, elapsed)
-	} else {
-		logger.Infof("pulled image: %s in %s", job.sourceImage, elapsed)
+	message := "copied " + describeCopyResult(job.sourceImage, result, elapsed)
+	switch {
+	case !isDigestReference(job.sourceImage), elapsed >= slowDigestPull:
+		logger.Info(message)
+	default:
+		logger.Debug(message)
 	}
 	return nil
+}
+
+// describeCopyResult renders what a copy actually moved. A multi-platform tag
+// only copies the index, so say so explicitly instead of implying that the
+// layers were transferred as well.
+func describeCopyResult(image string, result copyResult, elapsed time.Duration) string {
+	if result.kind == "index" {
+		return fmt.Sprintf("index %s in %s (media type: %s, children: %d, manifest size: %s); child manifests and layers are copied on demand",
+			image, elapsed, emptyDash(result.mediaType), result.children, humanBytes(result.size))
+	}
+	if result.kind == "image" {
+		return fmt.Sprintf("image %s in %s (media type: %s, layers: %d, size: %s)",
+			image, elapsed, emptyDash(result.mediaType), result.layers, humanBytes(result.size))
+	}
+	return fmt.Sprintf("image %s in %s", image, elapsed)
+}
+
+func emptyDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+// humanBytes renders a byte count with binary units for log readability.
+func humanBytes(size int64) string {
+	if size <= 0 {
+		return "-"
+	}
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%dB", size)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value := float64(size)
+	for _, suffix := range units {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f%s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1fPiB", value/unit)
 }
 
 // logPullFailure records one line per failed pull. Expected upstream misses

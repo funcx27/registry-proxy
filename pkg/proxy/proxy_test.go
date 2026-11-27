@@ -21,7 +21,7 @@ func newTestProxyServer(
 	t *testing.T,
 	opts Options,
 	mappings map[string]RegistryMapping,
-	syncFn func(context.Context, string, string, string) error,
+	syncFn func(context.Context, string, string, string) (copyResult, error),
 ) *server {
 	t.Helper()
 
@@ -42,7 +42,7 @@ func newTestProxyServer(
 		return srv
 	}
 	if syncFn == nil {
-		syncFn = func(context.Context, string, string, string) error { return nil }
+		syncFn = func(context.Context, string, string, string) (copyResult, error) { return copyResult{}, nil }
 	}
 
 	pool := newPullPool(t.Context(), 1, 0, cache.New(time.Minute, time.Minute), syncFn)
@@ -72,8 +72,8 @@ func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
 
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(context.Context, string, string, string) error {
-		return errors.New("upstream registry unavailable")
+	}, func(context.Context, string, string, string) (copyResult, error) {
+		return copyResult{}, errors.New("upstream registry unavailable")
 	})
 
 	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
@@ -100,8 +100,8 @@ func TestProxyPullNotFoundReturnsManifestUnknown(t *testing.T) {
 
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(context.Context, string, string, string) error {
-		return fmt.Errorf("get manifest ghcr.io/org/app:latest: %w", errs.ErrNotFound)
+	}, func(context.Context, string, string, string) (copyResult, error) {
+		return copyResult{}, fmt.Errorf("get manifest ghcr.io/org/app:latest: %w", errs.ErrNotFound)
 	})
 
 	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
@@ -128,9 +128,9 @@ func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 	srv := newTestProxyServer(t, Options{
 		CopyMode:    CopyModeSync,
 		PullTimeout: 30 * time.Millisecond,
-	}, map[string]RegistryMapping{"ghcr.io": {}}, func(context.Context, string, string, string) error {
+	}, map[string]RegistryMapping{"ghcr.io": {}}, func(context.Context, string, string, string) (copyResult, error) {
 		<-release
-		return nil
+		return copyResult{}, nil
 	})
 	// Cleanups run LIFO: unblock the pull before the pool is closed.
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
@@ -163,9 +163,9 @@ func TestHostModeWithoutMappingPullsFromHost(t *testing.T) {
 
 	pulled := make(chan string, 1)
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil,
-		func(_ context.Context, _ string, source, local string) error {
+		func(_ context.Context, _ string, source, local string) (copyResult, error) {
 			pulled <- source + " -> " + local
-			return nil
+			return copyResult{}, nil
 		})
 	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
 	client := proxyServer.Client()
@@ -203,10 +203,10 @@ func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 	var releaseOnce sync.Once
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(context.Context, string, string, string) error {
+	}, func(context.Context, string, string, string) (copyResult, error) {
 		atomic.AddInt32(&syncCalls, 1)
 		<-release
-		return nil
+		return copyResult{}, nil
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
@@ -271,10 +271,10 @@ func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
 	var startOnce, releaseOnce sync.Once
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeAsync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(context.Context, string, string, string) error {
+	}, func(context.Context, string, string, string) (copyResult, error) {
 		startOnce.Do(func() { close(started) })
 		<-release
-		return nil
+		return copyResult{}, nil
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 

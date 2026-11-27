@@ -30,11 +30,11 @@ func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		atomic.AddInt32(&calls, 1)
 		startOnce.Do(func() { close(started) })
 		<-release
-		return nil
+		return copyResult{}, nil
 	}
 
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
@@ -102,8 +102,8 @@ func TestPullPoolFailureLogLevel(t *testing.T) {
 			appLogger.AddHook(recorder)
 			logger = appLogger
 
-			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) error {
-				return tt.err
+			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) (copyResult, error) {
+				return copyResult{}, tt.err
 			})
 			t.Cleanup(pool.Close)
 
@@ -157,9 +157,9 @@ func TestPullPoolDigestLogLevel(t *testing.T) {
 			appLogger.AddHook(recorder)
 			logger = appLogger
 
-			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) error {
+			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) (copyResult, error) {
 				time.Sleep(tt.delay)
-				return nil
+				return copyResult{}, nil
 			})
 			t.Cleanup(pool.Close)
 
@@ -169,7 +169,7 @@ func TestPullPoolDigestLogLevel(t *testing.T) {
 			}
 			var completed *logrus.Entry
 			for _, entry := range recorder.entries {
-				if strings.HasPrefix(entry.Message, "pulled image:") {
+				if strings.HasPrefix(entry.Message, "copied ") {
 					completed = entry
 				}
 			}
@@ -201,11 +201,11 @@ func TestPullPoolRetriesAfterFailure(t *testing.T) {
 	cache := cache.New(time.Minute, time.Minute)
 
 	var calls int32
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		if atomic.AddInt32(&calls, 1) == 1 {
-			return errors.New("upstream unavailable")
+			return copyResult{}, errors.New("upstream unavailable")
 		}
-		return nil
+		return copyResult{}, nil
 	}
 
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
@@ -229,9 +229,9 @@ func TestPullPoolSkipsCachedImage(t *testing.T) {
 	cache.SetDefault(pullCacheKey("127.0.0.1:5000", image), struct{}{})
 
 	var calls int32
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		atomic.AddInt32(&calls, 1)
-		return nil
+		return copyResult{}, nil
 	}
 
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
@@ -249,7 +249,7 @@ func TestPullPoolPropagatesPanicAsError(t *testing.T) {
 	ctx := context.Background()
 	cache := cache.New(time.Minute, time.Minute)
 
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		panic("boom")
 	}
 
@@ -277,10 +277,10 @@ func TestPullPoolQueueWaitHonorsContext(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		startOnce.Do(func() { close(started) })
 		<-release
-		return nil
+		return copyResult{}, nil
 	}
 
 	pool := newPullPool(ctx, 1, 0, cache, syncFn)
@@ -322,10 +322,10 @@ func TestPullPoolCloseFailsQueuedAndNewWork(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 	})
 
-	syncFn := func(context.Context, string, string, string) error {
+	syncFn := func(context.Context, string, string, string) (copyResult, error) {
 		startOnce.Do(func() { close(started) })
 		<-release
-		return nil
+		return copyResult{}, nil
 	}
 
 	pool := newPullPool(ctx, 1, 1, cache, syncFn)
@@ -398,11 +398,11 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		var startOnce sync.Once
-		syncFn := func(context.Context, string, string, string) error {
+		syncFn := func(context.Context, string, string, string) (copyResult, error) {
 			atomic.AddInt32(&calls, 1)
 			startOnce.Do(func() { close(started) })
 			<-release
-			return nil
+			return copyResult{}, nil
 		}
 
 		// A nil cache keeps go-cache's janitor goroutine outside the bubble.
@@ -446,7 +446,7 @@ func TestPullPoolLeaderTimeoutKeepsFollowerPull(t *testing.T) {
 func TestPullPoolCloseDoesNotStrandCallers(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		pool := newPullPool(context.Background(), 2, 2, cache.New(time.Minute, time.Minute),
-			func(context.Context, string, string, string) error { return nil })
+			func(context.Context, string, string, string) (copyResult, error) { return copyResult{}, nil })
 
 		const callers = 16
 		var wg sync.WaitGroup

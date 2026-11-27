@@ -20,11 +20,11 @@ func TestManifestDispatcherPullsTagAndDigestSeparately(t *testing.T) {
 	var pulled []copied
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(_ context.Context, _, source, local string) error {
+	}, func(_ context.Context, _, source, local string) (copyResult, error) {
 		mu.Lock()
 		pulled = append(pulled, copied{source: source, local: local})
 		mu.Unlock()
-		return nil
+		return copyResult{}, nil
 	})
 
 	var upstreamCalls int32

@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -60,7 +62,7 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 		// Request waits may time out after a job is queued. Bound the copy
 		// itself as well, otherwise a stuck upstream can occupy a worker
 		// indefinitely.
-		copyWithTimeout := func(ctx context.Context, address, image, localTarget string) error {
+		copyWithTimeout := func(ctx context.Context, address, image, localTarget string) (copyResult, error) {
 			ctx, cancel := context.WithTimeout(ctx, opts.PullTimeout)
 			defer cancel()
 			return copier.Copy(ctx, address, image, localTarget)
@@ -130,9 +132,23 @@ func (s *server) preprocessMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if route != nil {
+			// Instrument manifest requests so each pull can be attributed to
+			// a client. Blob requests are deliberately excluded: a single
+			// pull issues dozens of them and they would bury the interesting
+			// events.
+			instrumented := false
+			if route.endpoint == "manifests" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				original := r.URL.Path
+				recorder := &statusRecorder{ResponseWriter: w}
+				start := time.Now()
+				defer func() {
+					logClientPullRequest(r, route, original, recorder.statusCode(), time.Since(start))
+				}()
+				w = recorder
+				instrumented = true
+			}
 			route.apply(r)
-			if s.options.CopyMode != CopyModeOff && route.endpoint == "manifests" &&
-				(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			if instrumented && s.options.CopyMode != CopyModeOff {
 				if handler := s.manifestDispatcherCustom(r, route); handler != nil {
 					handler.ServeHTTP(w, r)
 					return
@@ -141,4 +157,86 @@ func (s *server) preprocessMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// statusRecorder captures the status code written by a handler without
+// changing streaming behaviour.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusRecorder) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach optional interfaces such as
+// http.Flusher on the underlying writer.
+func (w *statusRecorder) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *statusRecorder) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+// logClientPullRequest records who pulled what: client address, requested
+// host and path, resolved route, upstream registry, response status and
+// duration. It is the join point between a nerdctl/containerd pull and the
+// copy logs emitted by the pull workers.
+//
+// Tag requests are the user-facing pull entry point and stay at info level.
+// The follow-up child manifest requests are an implementation detail of the
+// same pull, so they are only emitted at debug level. This keeps one pull to
+// roughly two lines (HEAD/GET of the tag) without losing the source IP.
+func logClientPullRequest(r *http.Request, route *registryRoute, originalPath string, status int, elapsed time.Duration) {
+	source, _ := route.sourceImage()
+	message := fmt.Sprintf("pull request: method=%s client=%s host=%s path=%s mode=%s upstream=%s source=%s status=%d duration=%s user_agent=%q",
+		r.Method, clientIP(r), emptyDash(r.Host), originalPath, route.mode, emptyDash(route.upstream), emptyDash(source), status, elapsed.Round(time.Millisecond), r.UserAgent())
+	if strings.Contains(route.reference, ":") {
+		logger.Debug(message)
+		return
+	}
+	logger.Info(message)
+}
+
+// clientIP returns the closest client address, preferring forwarding headers
+// when the proxy itself sits behind another layer (for example an ingress).
+func clientIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		if first, _, ok := strings.Cut(forwarded, ","); ok {
+			forwarded = first
+		}
+		if ip := strings.TrimSpace(forwarded); ip != "" {
+			return ip
+		}
+	}
+	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return emptyDash(r.RemoteAddr)
+	}
+	return host
 }

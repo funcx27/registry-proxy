@@ -156,9 +156,9 @@ func TestPreprocessMiddlewareLoopGuard(t *testing.T) {
 
 func TestPullPoolCarriesLoopChain(t *testing.T) {
 	gotChain := make(chan []string, 1)
-	pool := newPullPool(t.Context(), 1, 0, nil, func(ctx context.Context, _, _, _ string) error {
+	pool := newPullPool(t.Context(), 1, 0, nil, func(ctx context.Context, _, _, _ string) (copyResult, error) {
 		gotChain <- loopChainFromContext(ctx)
-		return nil
+		return copyResult{}, nil
 	})
 	t.Cleanup(pool.Close)
 
@@ -181,9 +181,9 @@ func TestAsyncManifestPullPreservesLoopChain(t *testing.T) {
 	gotChain := make(chan []string, 1)
 	srv := newTestProxyServer(t, Options{CopyMode: CopyModeAsync}, map[string]RegistryMapping{
 		"ghcr.io": {},
-	}, func(ctx context.Context, _, _, _ string) error {
+	}, func(ctx context.Context, _, _, _ string) (copyResult, error) {
 		gotChain <- loopChainFromContext(ctx)
-		return nil
+		return copyResult{}, nil
 	})
 
 	var upstreamCalls int32
