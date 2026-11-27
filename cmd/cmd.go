@@ -15,7 +15,6 @@ import (
 
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/registry"
-	"github.com/docker/go-metrics"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -35,7 +34,8 @@ var ServeCmd = &cobra.Command{
 			cmd.Usage()
 			os.Exit(1)
 		}
-		proxy.SetLogger(logging.NewAppLogger(appCfg.AppLogLevel))
+		appLog := logging.NewAppLogger(appCfg.AppLogLevel)
+		proxy.SetLogger(appLog)
 
 		config, err := resolveConfiguration(args, appCfg.RegistryConfigurationPath)
 		if err != nil {
@@ -57,7 +57,7 @@ var ServeCmd = &cobra.Command{
 		// validation is disabled, so make binary deployments safe even when
 		// their configuration predates this requirement.
 		if ensureLazyIndexCopyConfig(config, appCfg.Proxy.CopyMode) {
-			logrus.Warn("disabled distribution image-index dependency validation for lazy multi-platform copying")
+			appLog.Warn("disabled distribution image-index dependency validation for lazy multi-platform copying")
 		}
 
 		// The proxy is the only externally reachable endpoint. Keep the
@@ -74,7 +74,7 @@ var ServeCmd = &cobra.Command{
 		// Clear any distribution TLS settings so the loopback listener cannot
 		// accidentally require TLS.
 		config.HTTP.TLS = configuration.TLS{}
-		logrus.Infof("proxy listening on %s, internal registry on %s", proxyAddr, registryAddr)
+		appLog.Infof("proxy listening on %s, internal registry on %s", proxyAddr, registryAddr)
 
 		// Distribution's maintenance.readonly setting is read when the app is
 		// constructed and cannot be toggled at runtime. Use a handler gate so
@@ -93,7 +93,7 @@ var ServeCmd = &cobra.Command{
 		// application logs share one format and expected regclient misses are
 		// not reported as errors.
 		logging.PrepareRegistryLogger()
-		configureDebugServer(config)
+		configureDebugServer(appCfg.DebugAddr, config.HTTP.Debug.Addr, config.HTTP.Debug.Prometheus, appLog)
 
 		proxyErr := make(chan error, 1)
 		go func() {
@@ -107,7 +107,7 @@ var ServeCmd = &cobra.Command{
 
 		go func() {
 			if err := proxy.CleanImage(ctx, config, maintenanceGate, appCfg.Proxy.Cleanup); err != nil {
-				logrus.Errorf("image cleanup stopped: %v", err)
+				appLog.Errorf("image cleanup stopped: %v", err)
 			}
 		}()
 
@@ -196,27 +196,4 @@ func resolveConfiguration(args []string, environmentPath string) (*configuration
 	}
 
 	return config, nil
-}
-
-func configureDebugServer(config *configuration.Configuration) {
-	if config.HTTP.Debug.Addr != "" {
-		go func(addr string) {
-			logrus.Infof("debug server listening %v", addr)
-			if err := http.ListenAndServe(addr, nil); err != nil {
-				logrus.Fatalf("error listening on debug interface: %v", err)
-			}
-		}(config.HTTP.Debug.Addr)
-		configurePrometheus(config)
-	}
-}
-
-func configurePrometheus(config *configuration.Configuration) {
-	if config.HTTP.Debug.Prometheus.Enabled {
-		path := config.HTTP.Debug.Prometheus.Path
-		if path == "" {
-			path = "/metrics"
-		}
-		logrus.Info("providing prometheus metrics on ", path)
-		http.Handle(path, metrics.Handler())
-	}
 }

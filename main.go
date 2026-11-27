@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 
-	_ "net/http/pprof"
 	"registry-proxy/cmd"
 
 	_ "github.com/distribution/distribution/v3/registry/auth/htpasswd"

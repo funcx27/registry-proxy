@@ -203,6 +203,10 @@ env:
   logLevel: error
   # Level of registry-proxy's own logger (pull progress, cleanup, ...).
   appLogLevel: info
+  # pprof/metrics listener address. Empty keeps the built-in loopback address
+  # with a kernel-assigned port (the real URL is logged at startup). "off"
+  # disables the listener; host:port pins a fixed address.
+  debugAddr: ""
   # sync waits for the copy before proxying; async copies in the background;
   # off disables on-demand copying and serves the local registry only. Even in
   # off mode, path/host/ns requests normalize to the same local repository.

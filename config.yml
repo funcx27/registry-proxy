@@ -14,6 +14,15 @@ storage:
     concurrencylimit: 8
 http:
   addr: :80
+  # pprof and metrics are enabled by default on 127.0.0.1 with a kernel-assigned
+  # port; the startup log reports the real URL. Set DEBUG_ADDR=off to disable
+  # them, or DEBUG_ADDR=127.0.0.1:6060 to pin a port. The equivalent YAML form
+  # below is honored when DEBUG_ADDR is unset:
+  # debug:
+  #   addr: 127.0.0.1:6060
+  #   prometheus:
+  #     enabled: false
+  #     path: /metrics
   headers:
     X-Content-Type-Options: [nosniff]
 # auth:

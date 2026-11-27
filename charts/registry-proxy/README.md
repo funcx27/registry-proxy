@@ -259,6 +259,48 @@ logged at `debug` so one client pull produces one completion line. Set
 `appLogLevel=debug` to see every copy, or `appLogLevel=error` to keep only
 failures.
 
+## Debugging and profiling
+
+Every process also starts a diagnostics listener on loopback with a
+kernel-assigned port, so several binaries can run on one host without fighting
+over a fixed pprof port. The startup log records the real address:
+
+```text
+time="2026-11-27 09:45:06" level=info msg="debug server listening on http://127.0.0.1:41234/debug/pprof/"
+```
+
+`env.debugAddr` overrides the listener: leave it empty for the loopback
+ephemeral port, set `off` to disable pprof and Prometheus metrics entirely, or
+set a fixed `host:port`. Keep it on loopback: heap profiles can contain
+upstream credentials held in memory.
+
+Because the listener is loopback-only, `kubectl port-forward` cannot reach it.
+Use a process that runs inside the pod network namespace:
+
+```bash
+PORT=$(kubectl -n registry-proxy logs deploy/registry-proxy \
+  | sed -nE 's/.*http:\/\/127\.0\.0\.1:([0-9]+)\/debug\/pprof.*/\1/p' | tail -1)
+kubectl -n registry-proxy exec deploy/registry-proxy -- \
+  wget -qO- "http://127.0.0.1:${PORT}/debug/pprof/goroutineleak?debug=1"
+```
+
+For CPU, heap, or binary profiles, download the profile and open it with a
+local Go toolchain:
+
+```bash
+kubectl -n registry-proxy exec deploy/registry-proxy -- \
+  wget -qO /tmp/heap.pprof "http://127.0.0.1:${PORT}/debug/pprof/heap"
+kubectl -n registry-proxy cp <pod>:/tmp/heap.pprof ./heap.pprof
+go tool pprof -top ./heap.pprof
+```
+
+Go 1.27 adds `/debug/pprof/goroutineleak`. A request forces a GC cycle with
+leak detection and reports goroutines blocked forever on unreachable channels,
+mutexes, and similar primitives. Use it when you suspect a deadlocked or
+abandoned goroutine; it does not detect goroutine growth caused by slow
+upstreams or unbounded background work, and it should not be scraped on a
+schedule.
+
 ## Upstream registry credentials
 
 The application uses regclient to copy images. When `upstreamAuth.enabled=true`,
@@ -554,6 +596,7 @@ Set `imageClean.enabled=false` to disable the job.
 | `upstreamAuth.dockerconfigjson` | `""` | Raw JSON supplied with `--set-file`. |
 | `env.logLevel` | `error` | `REGISTRY_LOG_LEVEL`, distribution's internal logger. |
 | `env.appLogLevel` | `info` | `APP_LOG_LEVEL`, registry-proxy's own logger. |
+| `env.debugAddr` | `""` | `DEBUG_ADDR`: empty uses the loopback ephemeral port, `off` disables pprof/metrics, `host:port` pins an address. |
 | `env.imageCopyMode` | `sync` | `sync`, `async`, or `off`. |
 | `env.imagePullTimeout` | `5m` | Pull timeout. |
 | `env.imagePullWorkers` | `2` | Number of workers executing image copies. |

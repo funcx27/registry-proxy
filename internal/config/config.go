@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 const (
 	envAppLogLevel                      = "APP_LOG_LEVEL"
+	envDebugAddr                        = "DEBUG_ADDR"
 	envRegistryConfigurationPath        = "REGISTRY_CONFIGURATION_PATH"
 	envRegistryAuthFile                 = "REGISTRY_AUTH_FILE"
 	envRegistryMappingPath              = "REGISTRY_MAPPING_PATH"
@@ -42,7 +44,11 @@ const (
 type Config struct {
 	RegistryConfigurationPath string
 	AppLogLevel               string
-	Proxy                     proxy.Options
+	// DebugAddr controls the pprof/metrics listener. An empty value means the
+	// built-in 127.0.0.1:0 default, "off" disables the listener, and any other
+	// value must be a host:port pair.
+	DebugAddr string
+	Proxy     proxy.Options
 }
 
 // Load reads application configuration from the process environment.
@@ -70,6 +76,12 @@ func LoadFromEnv(lookup func(string) (string, bool)) (Config, error) {
 			},
 		},
 	}
+
+	debugAddr, err := parseDebugAddr(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DebugAddr = debugAddr
 
 	copyMode, err := parseCopyMode(envValueOrDefault(lookup, envImageCopyMode, string(proxy.CopyModeSync)))
 	if err != nil {
@@ -100,6 +112,25 @@ func LoadFromEnv(lookup func(string) (string, bool)) (Config, error) {
 	}
 	cfg.Proxy.Cleanup = cleanup
 	return cfg, nil
+}
+
+// parseDebugAddr validates DEBUG_ADDR without applying the process default.
+// The empty string means "automatic" so that YAML configuration and the
+// built-in loopback ephemeral port can still apply. Both "off" and "false"
+// are normalized to "off".
+func parseDebugAddr(lookup func(string) (string, bool)) (string, error) {
+	raw := envValue(lookup, envDebugAddr)
+	if raw == "" {
+		return "", nil
+	}
+	switch strings.ToLower(raw) {
+	case "off", "false":
+		return "off", nil
+	}
+	if _, _, err := net.SplitHostPort(raw); err != nil {
+		return "", fmt.Errorf("%s=%q: must be \"off\", \"false\", or host:port: %w", envDebugAddr, raw, err)
+	}
+	return raw, nil
 }
 
 func parseCleanup(lookup func(string) (string, bool)) (proxy.CleanupOptions, error) {

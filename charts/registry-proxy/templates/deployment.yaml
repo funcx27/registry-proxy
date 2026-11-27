@@ -71,6 +71,10 @@ spec:
               value: {{ .Values.env.timezone | quote }}
             - name: APP_LOG_LEVEL
               value: {{ .Values.env.appLogLevel | quote }}
+            {{- with .Values.env.debugAddr }}
+            - name: DEBUG_ADDR
+              value: {{ . | quote }}
+            {{- end }}
             - name: REGISTRY_LOG_LEVEL
               value: {{ .Values.env.logLevel | quote }}
             - name: IMAGE_COPY_MODE

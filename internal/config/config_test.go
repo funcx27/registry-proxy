@@ -28,6 +28,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.AppLogLevel != "info" {
 		t.Fatalf("AppLogLevel = %q, want info", cfg.AppLogLevel)
 	}
+	if cfg.DebugAddr != "" {
+		t.Fatalf("DebugAddr = %q, want empty (automatic)", cfg.DebugAddr)
+	}
 
 	opts := cfg.Proxy
 	if opts.CopyMode != proxy.CopyModeSync {
@@ -74,6 +77,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	cfg, err := LoadFromEnv(lookupFrom(map[string]string{
 		"REGISTRY_CONFIGURATION_PATH": " /etc/registry/config.yml ",
 		"APP_LOG_LEVEL":               "debug",
+		"DEBUG_ADDR":                  " 127.0.0.1:6060 ",
 		"REGISTRY_MAPPING_PATH":       "/etc/registry/registry-mapping.yaml",
 		"IMAGE_COPY_MODE":             "async",
 		"IMAGE_PULL_TIMEOUT":          "90s",
@@ -95,6 +99,9 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	}
 	if cfg.AppLogLevel != "debug" {
 		t.Fatalf("AppLogLevel = %q, want debug", cfg.AppLogLevel)
+	}
+	if cfg.DebugAddr != "127.0.0.1:6060" {
+		t.Fatalf("DebugAddr = %q, want 127.0.0.1:6060", cfg.DebugAddr)
 	}
 
 	opts := cfg.Proxy
@@ -148,12 +155,31 @@ func TestLoadFromEnvAcceptsOffCopyMode(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvDebugAddrDisabled(t *testing.T) {
+	for _, raw := range []string{"off", "false", " OFF "} {
+		t.Run(raw, func(t *testing.T) {
+			cfg, err := LoadFromEnv(lookupFrom(map[string]string{"DEBUG_ADDR": raw}))
+			if err != nil {
+				t.Fatalf("LoadFromEnv() error = %v", err)
+			}
+			if cfg.DebugAddr != "off" {
+				t.Fatalf("DebugAddr = %q, want off", cfg.DebugAddr)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 	tests := []struct {
 		name   string
 		values map[string]string
 		want   string
 	}{
+		{
+			name:   "invalid debug addr",
+			values: map[string]string{"DEBUG_ADDR": "127.0.0.1"},
+			want:   "DEBUG_ADDR",
+		},
 		{
 			name:   "unknown copy mode",
 			values: map[string]string{"IMAGE_COPY_MODE": "eventual"},
