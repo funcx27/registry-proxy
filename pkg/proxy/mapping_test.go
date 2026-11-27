@@ -92,3 +92,28 @@ func TestLogRegistryMappingsIsSorted(t *testing.T) {
 		t.Fatalf("log lines are not sorted: %v", lines)
 	}
 }
+
+func TestLoadRegistryMappingsPreservePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry-mapping.yaml")
+	content := `dockerhub:
+  registry: upstream.example.com
+  preservePath: true
+alias:
+  registry: upstream.example.com
+  preservePath: false
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write mapping: %v", err)
+	}
+
+	mappings, err := loadRegistryMappings(path)
+	if err != nil {
+		t.Fatalf("loadRegistryMappings() error = %v", err)
+	}
+	if got := mappings["dockerhub"].PreservePath; got == nil || !*got {
+		t.Fatalf("dockerhub preservePath = %v, want true", got)
+	}
+	if got := mappings["alias"].PreservePath; got == nil || *got {
+		t.Fatalf("alias preservePath = %v, want false", got)
+	}
+}

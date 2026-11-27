@@ -66,7 +66,30 @@ config:
       # Optional: copy through another host or registry-proxy, with an optional
       # repository prefix.
       registry: proxy.example.com/quay.io
+    dockerhub:
+      # Namespace mapping: keep dockerhub/alpine/socat in the upstream path.
+      registry: upstream-proxy.example.com
 ```
+
+A mapping key that is a DNS registry name uses registry semantics: the first
+path component identifies the upstream and is not repeated in the upstream
+repository path.
+
+| Client request | Mapping | Upstream image |
+| --- | --- | --- |
+| `/v2/docker.io/alpine/socat/manifests/latest` | `docker.io` | `docker.io/alpine/socat:latest` |
+| `/v2/docker.io/alpine/manifests/latest` | `docker.io` with `defaultNamespace: library` | `docker.io/library/alpine:latest` |
+| `/v2/dockerhub/alpine/socat/manifests/latest` | `dockerhub` with `registry: upstream-proxy.example.com` | `upstream-proxy.example.com/dockerhub/alpine/socat:latest` |
+
+Namespace keys preserve the full upstream path by default. Set
+`preservePath: false` on a namespace mapping to remove the first path component,
+or `preservePath: true` on a domain mapping to keep it. This makes it possible to
+chain through another proxy without conflating a namespace such as `dockerhub`
+with the `docker.io` registry.
+
+When both a Host mapping and a namespace mapping match, the Host mapping wins.
+An explicit registry domain in the first path component still takes precedence
+over the Host header, so `/v2/docker.io/...` is always treated as Docker Hub.
 
 The chart writes this table to `/var/lib/registry/registry-mapping.yaml`, the
 default location derived from the registry configuration's filesystem root. Set
@@ -105,7 +128,8 @@ To keep a hostname mapping stable, pin the Service ClusterIP and use port 80:
 ```yaml
 service:
   type: ClusterIP
-  clusterIP: 10.96.0.50
+  # Replace with an unused address from your cluster's Service CIDR.
+  clusterIP: 192.0.2.10
   port: 80
 ```
 
@@ -113,7 +137,7 @@ Then map the registry hostname on a client that can route to the cluster service
 CIDR:
 
 ```text
-10.96.0.50 registry.example.com
+192.0.2.10 registry.example.com
 ```
 
 The address must be unused and within the cluster's service CIDR. `clusterIP` is

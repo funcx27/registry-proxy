@@ -44,7 +44,7 @@ chart-lint:
 	helm template registry-proxy $(CHART_DIR) --values $(CHART_AUTH_VALUES) --set-file upstreamAuth.dockerconfigjson=$(CHART_AUTH_FILE) > /dev/null
 	helm lint --strict $(CHART_DIR) --values $(CHART_REGISTRIES_VALUES)
 	helm template registry-proxy $(CHART_DIR) --values $(CHART_REGISTRIES_VALUES) > /dev/null
-	helm template registry-proxy $(CHART_DIR) --set service.clusterIP=10.96.0.50 > /dev/null
+	helm template registry-proxy $(CHART_DIR) --set service.clusterIP=192.0.2.10 > /dev/null
 	helm template registry-proxy $(CHART_DIR) --set persistence.type=pvc > /dev/null
 	helm template registry-proxy $(CHART_DIR) --set service.port=8080 > /dev/null
 	! helm template registry-proxy $(CHART_DIR) --set service.port=443 > /dev/null

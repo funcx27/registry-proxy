@@ -8,9 +8,13 @@ import (
 
 func TestResolveRoute(t *testing.T) {
 	srv := &server{mappings: map[string]RegistryMapping{
-		"ghcr.io":   {},
-		"docker.io": {DefaultNamespace: "library"},
-		"quay.io":   {Registry: "proxy.example.com/quay.io"},
+		"ghcr.io":            {},
+		"docker.io":          {DefaultNamespace: "library"},
+		"dockerhub":          {Registry: "upstream.example.com"},
+		"origin.example.com": {Registry: "upstream.example.com"},
+		"quay.io":            {Registry: "proxy.example.com/quay.io"},
+		"mirror.example.com": {Registry: "upstream.example.com", PreservePath: boolPtr(true)},
+		"alias":              {Registry: "proxy.example.com", PreservePath: boolPtr(false)},
 	}}
 
 	tests := []struct {
@@ -154,6 +158,76 @@ func TestResolveRoute(t *testing.T) {
 			wantReference: "v1",
 			wantPath:      "/v2/quay.io/org/app/manifests/v1",
 			wantImage:     "proxy.example.com/quay.io/org/app:v1",
+		},
+		{
+			name:          "namespace mapping preserves upstream path",
+			host:          "proxy.example.com",
+			path:          "/v2/dockerhub/alpine/socat/manifests/latest",
+			wantMode:      routeModePath,
+			wantRegistry:  "dockerhub",
+			wantUpstream:  "upstream.example.com",
+			wantLocal:     "dockerhub/alpine/socat",
+			wantSource:    "dockerhub/alpine/socat",
+			wantEndpoint:  "manifests",
+			wantReference: "latest",
+			wantPath:      "/v2/dockerhub/alpine/socat/manifests/latest",
+			wantImage:     "upstream.example.com/dockerhub/alpine/socat:latest",
+		},
+		{
+			name:          "domain mapping can opt into path preservation",
+			host:          "proxy.example.com",
+			path:          "/v2/mirror.example.com/dockerhub/alpine/manifests/latest",
+			wantMode:      routeModePath,
+			wantRegistry:  "mirror.example.com",
+			wantUpstream:  "upstream.example.com",
+			wantLocal:     "mirror.example.com/dockerhub/alpine",
+			wantSource:    "mirror.example.com/dockerhub/alpine",
+			wantEndpoint:  "manifests",
+			wantReference: "latest",
+			wantPath:      "/v2/mirror.example.com/dockerhub/alpine/manifests/latest",
+			wantImage:     "upstream.example.com/mirror.example.com/dockerhub/alpine:latest",
+		},
+		{
+			name:          "namespace mapping can opt out of path preservation",
+			host:          "proxy.example.com",
+			path:          "/v2/alias/alpine/socat/manifests/latest",
+			wantMode:      routeModePath,
+			wantRegistry:  "alias",
+			wantUpstream:  "proxy.example.com",
+			wantLocal:     "alias/alpine/socat",
+			wantSource:    "alpine/socat",
+			wantEndpoint:  "manifests",
+			wantReference: "latest",
+			wantPath:      "/v2/alias/alpine/socat/manifests/latest",
+			wantImage:     "proxy.example.com/alpine/socat:latest",
+		},
+		{
+			name:          "host mapping wins over same namespace mapping",
+			host:          "origin.example.com",
+			path:          "/v2/dockerhub/alpine/socat/manifests/latest",
+			wantMode:      routeModeHost,
+			wantRegistry:  "origin.example.com",
+			wantUpstream:  "upstream.example.com",
+			wantLocal:     "origin.example.com/dockerhub/alpine/socat",
+			wantSource:    "dockerhub/alpine/socat",
+			wantEndpoint:  "manifests",
+			wantReference: "latest",
+			wantPath:      "/v2/origin.example.com/dockerhub/alpine/socat/manifests/latest",
+			wantImage:     "upstream.example.com/dockerhub/alpine/socat:latest",
+		},
+		{
+			name:          "domain path wins over host mapping",
+			host:          "origin.example.com",
+			path:          "/v2/docker.io/alpine/socat/manifests/latest",
+			wantMode:      routeModePath,
+			wantRegistry:  "docker.io",
+			wantUpstream:  "docker.io",
+			wantLocal:     "docker.io/alpine/socat",
+			wantSource:    "alpine/socat",
+			wantEndpoint:  "manifests",
+			wantReference: "latest",
+			wantPath:      "/v2/docker.io/alpine/socat/manifests/latest",
+			wantImage:     "docker.io/alpine/socat:latest",
 		},
 		{
 			name:          "digest reference",
@@ -339,6 +413,10 @@ func TestResolveRoute(t *testing.T) {
 			}
 		})
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func TestIsRegistryDomain(t *testing.T) {

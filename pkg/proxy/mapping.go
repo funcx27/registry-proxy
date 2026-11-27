@@ -83,7 +83,7 @@ func logRegistryMappings(mappings map[string]RegistryMapping, infof func(string,
 		if namespace == "" {
 			namespace = "-"
 		}
-		infof("registry mapping: %s -> %s (default namespace: %s)", key, upstream, namespace)
+		infof("registry mapping: %s -> %s (default namespace: %s, preserve path: %t)", key, upstream, namespace, mapping.preserveRepositoryPath(key))
 	}
 }
 

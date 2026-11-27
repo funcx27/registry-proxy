@@ -77,14 +77,20 @@ func (s *server) resolveRoute(r *http.Request) (*registryRoute, error) {
 		mode     routeMode
 	)
 	switch {
-	case s.hasMappingExact(first):
+	case isRegistryDomain(first):
+		// A registry-shaped first path component is an explicit path-mode
+		// request. It must win over Host mappings so clients can address a
+		// different registry without changing the Host header.
 		registry, mapping = s.mappingEntry(first)
 		mode = routeModePath
 	case s.hasMappingHost(host):
+		// Host mappings describe the logical registry selected by the Host
+		// header. They take precedence over namespace mappings with the same
+		// first path component (for example "dockerhub" in host mode).
 		registry, mapping = s.mappingHost(host)
 		mode = routeModeHost
-	case isRegistryDomain(first):
-		registry = first
+	case s.hasMappingExact(first):
+		registry, mapping = s.mappingEntry(first)
 		mode = routeModePath
 	case ns != "":
 		if s.hasMappingExact(ns) {
@@ -107,8 +113,15 @@ func (s *server) resolveRoute(r *http.Request) (*registryRoute, error) {
 	switch mode {
 	case routeModePath:
 		localRepository = first + strings.TrimPrefix(repository, originalFirst)
-		sourceBase = strings.TrimPrefix(repository, originalFirst)
-		sourceBase = strings.TrimPrefix(sourceBase, "/")
+		if mapping.preserveRepositoryPath(registry) {
+			// Namespace mappings address repositories such as
+			// /v2/dockerhub/alpine/socat on the upstream, so the namespace must
+			// remain part of the source path.
+			sourceBase = repository
+		} else {
+			sourceBase = strings.TrimPrefix(repository, originalFirst)
+			sourceBase = strings.TrimPrefix(sourceBase, "/")
+		}
 	case routeModeHost, routeModeNamespace:
 		localRepository = registry + "/" + repository
 		sourceBase = repository
@@ -137,6 +150,17 @@ func (s *server) resolveRoute(r *http.Request) (*registryRoute, error) {
 		suffix:           suffix,
 		rewritePath:      mode != routeModePath || localRepository != repository,
 	}, nil
+}
+
+// preserveRepositoryPath reports whether the mapping key is part of the
+// upstream repository path. Domain keys are registry hosts and are stripped.
+// Namespace keys are preserved by default so a request for dockerhub/alpine is
+// forwarded as dockerhub/alpine rather than being reinterpreted as Docker Hub.
+func (m RegistryMapping) preserveRepositoryPath(registry string) bool {
+	if m.PreservePath != nil {
+		return *m.PreservePath
+	}
+	return !strings.ContainsAny(registry, ".:")
 }
 
 func (s *server) mappingEntry(name string) (string, RegistryMapping) {

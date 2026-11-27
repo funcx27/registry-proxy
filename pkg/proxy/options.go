@@ -17,16 +17,23 @@ const (
 	CopyModeOff CopyMode = "off"
 )
 
-// RegistryMapping describes how one upstream registry is addressed.
+// RegistryMapping describes how one upstream registry or repository namespace
+// is addressed.
 //
 // The map key in the mapping file is the logical registry name used in local
-// repository paths, for example "ghcr.io". Registry may point at a different
-// host or another proxy, optionally with a repository prefix. DefaultNamespace
-// is prepended to single-component repositories, mirroring Docker Hub's
-// "library" convention.
+// repository paths, for example "ghcr.io" or "dockerhub". Registry may point at
+// a different host or another proxy, optionally with a repository prefix.
+// DefaultNamespace is prepended to single-component repositories, mirroring
+// Docker Hub's "library" convention.
+//
+// Domain keys use registry semantics: the first path component identifies the
+// upstream registry and is removed from the upstream repository path. Namespace
+// keys keep the path unchanged, which allows chaining through another proxy
+// that owns namespaces such as "dockerhub". PreservePath overrides that default.
 type RegistryMapping struct {
 	Registry         string `yaml:"registry,omitempty"`
 	DefaultNamespace string `yaml:"defaultNamespace,omitempty"`
+	PreservePath     *bool  `yaml:"preservePath,omitempty"`
 }
 
 // Options are the runtime knobs that affect image pulls and cleanup.

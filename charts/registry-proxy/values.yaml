@@ -141,18 +141,29 @@ upstreamAuth:
 # <storage rootdirectory>/registry-mapping.yaml by default, which is
 # /var/lib/registry/registry-mapping.yaml for the container image.
 #
-# Keys are real registry domains. The proxy accepts three equivalent client
-# forms and normalizes all of them to the same local repository:
+# Keys are registry domains or repository namespaces. The proxy accepts three
+# equivalent client forms and normalizes all of them to the same local
+# repository:
 #
 #   path:  /v2/ghcr.io/org/app/manifests/v1
 #   host:  Host: ghcr.io + /v2/org/app/manifests/v1
 #   ns:    /v2/org/app/manifests/v1?ns=ghcr.io
 #
+# Domain keys use registry semantics: /v2/docker.io/alpine is copied from
+# docker.io/library/alpine. Namespace keys preserve the upstream path:
+# /v2/dockerhub/alpine/socat is copied from <registry>/dockerhub/alpine/socat.
+# Set preservePath explicitly to override that default.
+#
+# A Host mapping wins over a namespace mapping with the same first path
+# component. An explicit registry domain in the first path component still
+# takes precedence over the Host header.
+#
 # docker.io uses the conventional "library" namespace for single-component
 # repositories such as docker.io/alpine.
 #
 # registry optionally points at a different upstream host, or at another proxy
-# with a repository prefix. Leave it empty to use the map key itself.
+# with a repository prefix. Leave it empty to use the map key itself. Namespace
+# mappings normally need an explicit registry because the key is not a hostname.
 config:
   registryMapping:
     docker.io:
