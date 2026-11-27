@@ -15,6 +15,11 @@ import (
 
 var errPullPoolClosed = errors.New("image pull pool closed")
 
+// slowDigestPull is the point where a digest-level copy is no longer an
+// implementation detail: it explains the latency of the user-facing pull, so
+// it is reported at info instead of debug.
+const slowDigestPull = time.Second
+
 type imagePullJob struct {
 	registryAddr string
 	sourceImage  string
@@ -193,11 +198,14 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	// A single user-facing pull fans out into additional copies of the
 	// digest references referenced by the tag (index and child manifests).
 	// Those are an implementation detail, so only the tag-level completion
-	// stays at info level.
-	if isDigestReference(job.sourceImage) {
-		logger.Debugf("pulled image: %s in %s", job.sourceImage, time.Since(begin))
+	// stays at info level. A digest copy that actually moved a large image is
+	// the exception: it dominates the latency the user observes, so report it
+	// even though the tag-level line finished long before.
+	elapsed := time.Since(begin)
+	if isDigestReference(job.sourceImage) && elapsed < slowDigestPull {
+		logger.Debugf("pulled image: %s in %s", job.sourceImage, elapsed)
 	} else {
-		logger.Infof("pulled image: %s in %s", job.sourceImage, time.Since(begin))
+		logger.Infof("pulled image: %s in %s", job.sourceImage, elapsed)
 	}
 	return nil
 }

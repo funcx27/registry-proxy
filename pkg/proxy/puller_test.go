@@ -124,6 +124,65 @@ func TestPullPoolFailureLogLevel(t *testing.T) {
 	}
 }
 
+func TestPullPoolDigestLogLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		digest    string
+		delay     time.Duration
+		wantLevel logrus.Level
+	}{
+		{
+			name:      "fast child manifest copy stays debug",
+			digest:    "sha256:1111",
+			wantLevel: logrus.DebugLevel,
+		},
+		{
+			name:      "slow child copy explains user latency at info",
+			digest:    "sha256:2222",
+			delay:     slowDigestPull + 10*time.Millisecond,
+			wantLevel: logrus.InfoLevel,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := logger
+			t.Cleanup(func() { logger = previous })
+
+			appLogger := logrus.New()
+			appLogger.SetOutput(io.Discard)
+			// Enable debug so the filtered-out case can still be asserted
+			// instead of silently producing no entry.
+			appLogger.SetLevel(logrus.DebugLevel)
+			recorder := &levelRecorder{}
+			appLogger.AddHook(recorder)
+			logger = appLogger
+
+			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) error {
+				time.Sleep(tt.delay)
+				return nil
+			})
+			t.Cleanup(pool.Close)
+
+			source := "registry.example.com/dockerhub/library/nginx@" + tt.digest
+			if err := pool.ensure(context.Background(), "127.0.0.1:5000", source, "registry.example.com/dockerhub/library/nginx@"+tt.digest); err != nil {
+				t.Fatalf("ensure() error = %v", err)
+			}
+			var completed *logrus.Entry
+			for _, entry := range recorder.entries {
+				if strings.HasPrefix(entry.Message, "pulled image:") {
+					completed = entry
+				}
+			}
+			if completed == nil {
+				t.Fatalf("no completion log in %d entries", len(recorder.entries))
+			}
+			if completed.Level != tt.wantLevel {
+				t.Fatalf("log level = %s, want %s", completed.Level, tt.wantLevel)
+			}
+		})
+	}
+}
+
 type levelRecorder struct {
 	entries []*logrus.Entry
 }
