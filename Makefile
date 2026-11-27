@@ -21,10 +21,12 @@ CHART_REGISTRIES_VALUES ?= $(CHART_DIR)/ci/registries-values.yaml
 DOCKER_BUILD = docker build ${DEBUG} --pull --push --builder=mybuilder --platform=linux/arm64,linux/amd64
 amd64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -gcflags="all=-trimpath=${PWD}" -asmflags="all=-trimpath=${PWD}" -o bin/registry-amd64 main.go
+	cp config.yml bin/config.yml
 	docker build --load -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
 	#  gzip bin/registry-amd64
 arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o bin/registry-arm64 main.go
+	cp config.yml bin/config.yml
 push: amd64 arm64
 	$(DOCKER_BUILD) -t $(IMAGE_REPO):$(VERSION) -f Dockerfile bin
 test: amd64

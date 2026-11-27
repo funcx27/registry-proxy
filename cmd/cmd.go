@@ -52,6 +52,14 @@ var ServeCmd = &cobra.Command{
 			appCfg.Proxy.RegistryMappingPath = defaultRegistryMappingPath(config)
 		}
 
+		// The proxy stores a multi-platform index before fetching its child
+		// manifests. Distribution rejects such an index unless index dependency
+		// validation is disabled, so make binary deployments safe even when
+		// their configuration predates this requirement.
+		if ensureLazyIndexCopyConfig(config, appCfg.Proxy.CopyMode) {
+			logrus.Warn("disabled distribution image-index dependency validation for lazy multi-platform copying")
+		}
+
 		// The proxy is the only externally reachable endpoint. Keep the
 		// registry on a loopback-only, process-scoped port so multiple
 		// instances cannot collide in the same network namespace.
@@ -130,6 +138,25 @@ func defaultRegistryMappingPath(config *configuration.Configuration) string {
 		return ""
 	}
 	return filepath.Join(root, "registry-mapping.yaml")
+}
+
+// ensureLazyIndexCopyConfig disables distribution's image-index dependency
+// validation when copying is enabled. The proxy intentionally stores the
+// top-level index first and fetches child manifests on demand, which is only
+// accepted when the "none" platforms policy is configured. It returns true
+// when the configuration was changed.
+func ensureLazyIndexCopyConfig(config *configuration.Configuration, mode proxy.CopyMode) bool {
+	if mode == proxy.CopyModeOff {
+		return false
+	}
+	if !config.Validation.Enabled && config.Validation.Disabled {
+		return false
+	}
+	if config.Validation.Manifests.Indexes.Platforms == "none" {
+		return false
+	}
+	config.Validation.Manifests.Indexes.Platforms = "none"
+	return true
 }
 
 func pickLoopbackAddr() (string, error) {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"registry-proxy/pkg/proxy"
+
 	"github.com/distribution/distribution/v3/configuration"
 )
 
@@ -105,6 +107,82 @@ func TestResolveConfigurationRequiresPath(t *testing.T) {
 func TestResolveConfigurationMissingFile(t *testing.T) {
 	if _, err := resolveConfiguration([]string{filepath.Join(t.TempDir(), "missing.yml")}, ""); err == nil {
 		t.Fatal("resolveConfiguration() error = nil, want error")
+	}
+}
+
+func TestEnsureLazyIndexCopyConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       proxy.CopyMode
+		validation configuration.Validation
+		wantChange bool
+		want       configuration.Platforms
+	}{
+		{
+			name:       "sync defaults to validating all platforms",
+			mode:       proxy.CopyModeSync,
+			wantChange: true,
+			want:       "none",
+		},
+		{
+			name:       "async with all platforms",
+			mode:       proxy.CopyModeAsync,
+			validation: configuration.Validation{Manifests: configuration.ValidationManifests{Indexes: configuration.ValidationIndexes{Platforms: "all"}}},
+			wantChange: true,
+			want:       "none",
+		},
+		{
+			name:       "platform list is narrowed",
+			mode:       proxy.CopyModeSync,
+			validation: configuration.Validation{Manifests: configuration.ValidationManifests{Indexes: configuration.ValidationIndexes{Platforms: "list"}}},
+			wantChange: true,
+			want:       "none",
+		},
+		{
+			name:       "already disabled",
+			mode:       proxy.CopyModeSync,
+			validation: configuration.Validation{Manifests: configuration.ValidationManifests{Indexes: configuration.ValidationIndexes{Platforms: "none"}}},
+			want:       "none",
+		},
+		{
+			name: "copy mode off leaves configuration untouched",
+			mode: proxy.CopyModeOff,
+			want: "",
+		},
+		{
+			name:       "validation fully disabled",
+			mode:       proxy.CopyModeSync,
+			validation: configuration.Validation{Disabled: true},
+			want:       "",
+		},
+		{
+			name:       "enabled takes precedence over disabled",
+			mode:       proxy.CopyModeSync,
+			validation: configuration.Validation{Enabled: true, Disabled: true},
+			wantChange: true,
+			want:       "none",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &configuration.Configuration{Validation: tt.validation}
+			if got := ensureLazyIndexCopyConfig(config, tt.mode); got != tt.wantChange {
+				t.Fatalf("ensureLazyIndexCopyConfig() = %v, want %v", got, tt.wantChange)
+			}
+			if got := config.Validation.Manifests.Indexes.Platforms; got != tt.want {
+				t.Fatalf("platforms = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShippedConfigDisablesIndexValidation(t *testing.T) {
+	config, err := resolveConfiguration([]string{"../config.yml"}, "")
+	if err != nil {
+		t.Fatalf("resolveConfiguration() error = %v", err)
+	}
+	if got := config.Validation.Manifests.Indexes.Platforms; got != "none" {
+		t.Fatalf("validation.manifests.indexes.platforms = %q, want %q", got, "none")
 	}
 }
 
