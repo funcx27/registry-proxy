@@ -77,8 +77,12 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 	}
 
 	if opts.Cleanup.Enabled {
+		projects := strings.Join(opts.Cleanup.Projects, ",")
+		if projects == "" {
+			projects = "all repositories"
+		}
 		logger.Infof("image clean interval: %s", opts.Cleanup.Interval)
-		logger.Infof("image clean project: %s", opts.Cleanup.Projects)
+		logger.Infof("image clean project: %s", projects)
 		logger.Infof("image clean before: %s", opts.Cleanup.DeleteBefore)
 		logger.Infof("image clean retain tag nums: %d", opts.Cleanup.TagRetain)
 	}

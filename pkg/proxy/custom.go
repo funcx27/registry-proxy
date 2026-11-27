@@ -22,6 +22,7 @@ import (
 
 // CleanImage periodically deletes old tags and garbage-collects unreferenced
 // blobs. The first pass runs immediately; subsequent passes use opts.Interval.
+// An empty project list walks every repository in the local registry.
 func CleanImage(ctx context.Context, config *configuration.Configuration, gate *MaintenanceGate, opts CleanupOptions) error {
 	if !opts.Enabled {
 		return nil
@@ -29,14 +30,15 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 	if gate == nil {
 		return fmt.Errorf("maintenance gate is nil")
 	}
-	if opts.TagRetain < 0 {
-		return fmt.Errorf("image tag retain nums must not be negative")
+	if opts.TagRetain < 1 {
+		return fmt.Errorf("image tag retain nums must be at least 1")
 	}
 	if opts.Interval <= 0 {
 		return fmt.Errorf("image clean interval must be positive")
 	}
-	if len(opts.Projects) == 0 {
-		return fmt.Errorf("image clean projects must not be empty")
+	projects := opts.Projects
+	if len(projects) == 0 {
+		projects = []string{""}
 	}
 
 	cleanJob := func() error {
@@ -45,7 +47,7 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 			defer logger.Info("image clean maintenance window ended")
 			logger.Info("image clean job started")
 			var deletedPaths []string
-			for _, project := range opts.Projects {
+			for _, project := range projects {
 				deletes, err := deleteImageTagPath(config, project, opts.TagRetain, opts.DeleteBefore, false)
 				if err != nil {
 					if os.IsNotExist(err) {
@@ -160,7 +162,10 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 		return nil, fmt.Errorf("filesystem storage rootdirectory is not configured")
 	}
 	reposPath := path.Join(rootDir, "docker/registry/v2/repositories")
-	projectPath := path.Join(reposPath, project)
+	projectPath := reposPath
+	if project != "" {
+		projectPath = path.Join(reposPath, project)
+	}
 	type tagTime struct {
 		tag  string
 		time time.Time

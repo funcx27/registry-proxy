@@ -53,14 +53,14 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 
 	cleanup := opts.Cleanup
-	if cleanup.Enabled {
-		t.Fatal("Cleanup.Enabled = true, want false")
+	if !cleanup.Enabled {
+		t.Fatal("Cleanup.Enabled = false, want true")
 	}
-	if cleanup.TagRetain != 0 {
-		t.Fatalf("Cleanup.TagRetain = %d, want 0", cleanup.TagRetain)
+	if cleanup.TagRetain != 2 {
+		t.Fatalf("Cleanup.TagRetain = %d, want 2", cleanup.TagRetain)
 	}
-	if cleanup.Interval != time.Minute {
-		t.Fatalf("Cleanup.Interval = %s, want 1m", cleanup.Interval)
+	if cleanup.Interval != 12*time.Hour {
+		t.Fatalf("Cleanup.Interval = %s, want 12h", cleanup.Interval)
 	}
 	if cleanup.DeleteBefore != 24*time.Hour {
 		t.Fatalf("Cleanup.DeleteBefore = %s, want 24h", cleanup.DeleteBefore)
@@ -187,17 +187,17 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		{
 			name:   "negative cleanup retain",
 			values: map[string]string{"IMAGE_CLEAN_TAG_RETAIN_NUMS": "-1"},
-			want:   "must not be negative",
+			want:   "at least 1",
+		},
+		{
+			name:   "zero cleanup retain",
+			values: map[string]string{"IMAGE_CLEAN_TAG_RETAIN_NUMS": "0"},
+			want:   "at least 1",
 		},
 		{
 			name:   "non numeric cleanup retain",
 			values: map[string]string{"IMAGE_CLEAN_TAG_RETAIN_NUMS": "many"},
 			want:   "IMAGE_CLEAN_TAG_RETAIN_NUMS",
-		},
-		{
-			name:   "cleanup without project",
-			values: map[string]string{"IMAGE_CLEAN_TAG_RETAIN_NUMS": "1"},
-			want:   "IMAGE_CLEAN_PROJECT",
 		},
 		{
 			name: "invalid cleanup interval",
@@ -241,10 +241,10 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-// TestLoadFromEnvCleanupDisabledIgnoresSettings pins that an unset
+// TestLoadFromEnvCleanupDisabledIgnoresSettings pins that an explicitly empty
 // IMAGE_CLEAN_TAG_RETAIN_NUMS disables cleanup before any other cleanup
-// setting is parsed. The Helm chart always renders an empty value when cleanup
-// is disabled.
+// setting is parsed. The Helm chart renders that value when cleanup is
+// disabled, while an unset variable keeps the default policy enabled.
 func TestLoadFromEnvCleanupDisabledIgnoresSettings(t *testing.T) {
 	cfg, err := LoadFromEnv(lookupFrom(map[string]string{
 		"IMAGE_CLEAN_TAG_RETAIN_NUMS": "  ",
@@ -256,6 +256,22 @@ func TestLoadFromEnvCleanupDisabledIgnoresSettings(t *testing.T) {
 	}
 	if cfg.Proxy.Cleanup.Enabled {
 		t.Fatal("Cleanup.Enabled = true, want false")
+	}
+}
+
+func TestLoadFromEnvCleanupAllProjects(t *testing.T) {
+	cfg, err := LoadFromEnv(lookupFrom(map[string]string{
+		"IMAGE_CLEAN_TAG_RETAIN_NUMS": "2",
+		"IMAGE_CLEAN_PROJECT":         "",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.Proxy.Cleanup.Enabled {
+		t.Fatal("Cleanup.Enabled = false, want true")
+	}
+	if len(cfg.Proxy.Cleanup.Projects) != 0 {
+		t.Fatalf("Cleanup.Projects = %v, want empty (all repositories)", cfg.Proxy.Cleanup.Projects)
 	}
 }
 

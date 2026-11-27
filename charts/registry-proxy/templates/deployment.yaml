@@ -87,6 +87,9 @@ spec:
             - name: REGISTRY_AUTH_FILE
               value: {{ include "registry-proxy.upstreamAuthFile" . | quote }}
             {{- end }}
+            {{- if and .Values.imageClean.enabled (lt (int .Values.imageClean.retainTags) 1) }}
+            {{- fail "imageClean.retainTags must be at least 1" }}
+            {{- end }}
             - name: IMAGE_CLEAN_TAG_RETAIN_NUMS
               {{- if .Values.imageClean.enabled }}
               value: {{ .Values.imageClean.retainTags | quote }}

@@ -32,8 +32,9 @@ const (
 	defaultPullWorkers                  = 2
 	defaultPullQueueSize                = 0
 	defaultRepullMinInterval            = 5 * time.Minute
-	defaultCleanInterval                = time.Minute
+	defaultCleanInterval                = 12 * time.Hour
 	defaultCleanBeforeDays              = 1
+	defaultCleanTagRetain               = 2
 	maxCleanupDays               uint64 = uint64(1<<63-1) / uint64(24*time.Hour)
 )
 
@@ -62,6 +63,8 @@ func LoadFromEnv(lookup func(string) (string, bool)) (Config, error) {
 			RepullMinInterval:   defaultRepullMinInterval,
 			RegistryAuthFile:    envValue(lookup, envRegistryAuthFile),
 			Cleanup: proxy.CleanupOptions{
+				Enabled:      true,
+				TagRetain:    defaultCleanTagRetain,
 				Interval:     defaultCleanInterval,
 				DeleteBefore: defaultCleanBeforeDays * 24 * time.Hour,
 			},
@@ -101,13 +104,23 @@ func LoadFromEnv(lookup func(string) (string, bool)) (Config, error) {
 
 func parseCleanup(lookup func(string) (string, bool)) (proxy.CleanupOptions, error) {
 	opts := proxy.CleanupOptions{
+		Enabled:      true,
+		TagRetain:    defaultCleanTagRetain,
 		Interval:     defaultCleanInterval,
 		DeleteBefore: defaultCleanBeforeDays * 24 * time.Hour,
 	}
 
 	retainRaw, ok := lookup(envImageCleanTagRetainNums)
 	retainRaw = strings.TrimSpace(retainRaw)
-	if !ok || retainRaw == "" {
+	if !ok {
+		return opts, nil
+	}
+	if retainRaw == "" {
+		// An explicitly empty value is the documented opt-out. The Helm chart
+		// renders it when imageClean.enabled=false, while an unset variable
+		// keeps cleanup enabled with the defaults above.
+		opts.Enabled = false
+		opts.TagRetain = 0
 		return opts, nil
 	}
 
@@ -115,8 +128,8 @@ func parseCleanup(lookup func(string) (string, bool)) (proxy.CleanupOptions, err
 	if err != nil {
 		return proxy.CleanupOptions{}, fmt.Errorf("%s=%q: %w", envImageCleanTagRetainNums, retainRaw, err)
 	}
-	if retain < 0 {
-		return proxy.CleanupOptions{}, fmt.Errorf("%s=%q: must not be negative", envImageCleanTagRetainNums, retainRaw)
+	if retain < 1 {
+		return proxy.CleanupOptions{}, fmt.Errorf("%s=%q: must be at least 1; cleanup cannot retain zero tags", envImageCleanTagRetainNums, retainRaw)
 	}
 
 	opts.Enabled = true
@@ -135,10 +148,9 @@ func parseCleanup(lookup func(string) (string, bool)) (proxy.CleanupOptions, err
 	}
 	opts.DeleteBefore = time.Duration(days) * 24 * time.Hour
 
+	// An empty project list means every repository is eligible. This avoids
+	// hard-coding deployment-specific namespaces such as docker.io or ghcr.io.
 	opts.Projects = parseProjects(envValue(lookup, envImageCleanProject))
-	if len(opts.Projects) == 0 {
-		return proxy.CleanupOptions{}, fmt.Errorf("%s must contain at least one project when %s is set", envImageCleanProject, envImageCleanTagRetainNums)
-	}
 	return opts, nil
 }
 

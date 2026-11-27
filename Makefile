@@ -50,6 +50,7 @@ chart-lint:
 	helm template registry-proxy $(CHART_DIR) --set persistence.type=pvc > /dev/null
 	helm template registry-proxy $(CHART_DIR) --set service.port=8080 > /dev/null
 	! helm template registry-proxy $(CHART_DIR) --set service.port=443 > /dev/null
+	! helm template registry-proxy $(CHART_DIR) --set imageClean.retainTags=0 > /dev/null
 
 chart-package: chart-lint
 	mkdir -p $(CHART_PACKAGE_DIR)

@@ -186,13 +186,15 @@ config:
   # registry-mapping.yaml key.
   existingRegistryMappingConfigMap: ""
 
-# Optional tag cleanup job executed by the application.
+# Periodic tag cleanup job executed by the application.
 imageClean:
-  enabled: false
+  enabled: true
   interval: 12h
+  # Number of newest tags to retain per repository; must be at least 1.
   retainTags: 2
   # Comma-separated list of top-level repository namespaces to clean.
-  project: test
+  # Leave empty to clean every repository under the local registry.
+  project: ""
   beforeDays: 1
 
 env:

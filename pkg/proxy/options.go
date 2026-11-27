@@ -48,7 +48,8 @@ type Options struct {
 	Cleanup             CleanupOptions
 }
 
-// CleanupOptions controls the periodic tag cleanup job.
+// CleanupOptions controls the periodic tag cleanup job. TagRetain must be at
+// least 1. An empty Projects list means every repository is eligible.
 type CleanupOptions struct {
 	Enabled      bool
 	TagRetain    int

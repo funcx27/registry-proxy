@@ -516,19 +516,24 @@ fails startup instead of silently changing routing.
 
 ## Image cleanup
 
-The container image enables tag cleanup by default. The chart explicitly
-disables it unless `imageClean.enabled=true`:
+Tag cleanup is enabled by default and runs once at startup, then every
+`interval`:
 
 ```yaml
 imageClean:
   enabled: true
   interval: 12h
   retainTags: 2
-  project: test
+  project: ""
   beforeDays: 1
 ```
 
-`project` is a comma-separated list of top-level repository namespaces.
+`retainTags` must be at least 1. Each repository keeps its newest N tags;
+older tags are only removed when their last access is older than `beforeDays`.
+`project` is an optional comma-separated list of top-level repository
+namespaces. Leave it empty to clean every repository under the local registry.
+
+Set `imageClean.enabled=false` to disable the job.
 
 ## Other configuration
 
