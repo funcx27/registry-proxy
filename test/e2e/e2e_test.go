@@ -145,6 +145,9 @@ validation:
 	}
 
 	env := map[string]string{
+		// The copy lifecycle asserts on debug-level "pulling image" lines so a
+		// single fan-out can be counted without scraping registry internals.
+		"APP_LOG_LEVEL":             "debug",
 		"IMAGE_COPY_MODE":           "sync",
 		"DOCKERHUB_MIRROR":          upstreamHost,
 		"IMAGE_PULL_TIMEOUT":        "2m",
@@ -201,20 +204,26 @@ func stopProxy(cmd *exec.Cmd) {
 
 func cleanEnv() []string {
 	blocked := map[string]struct{}{
-		"DOCKERHUB_MIRROR":          {},
-		"HTTP_PROXY":                {},
-		"HTTPS_PROXY":               {},
-		"IMAGE_COPY_MODE":           {},
-		"IMAGE_PULL_QUEUE_SIZE":     {},
-		"IMAGE_PULL_TIMEOUT":        {},
-		"IMAGE_PULL_WORKERS":        {},
-		"IMAGE_REPULL_MIN_INTERVAL": {},
-		"NO_PROXY":                  {},
-		"OTEL_TRACES_EXPORTER":      {},
-		"REGISTRY_AUTH_FILE":        {},
-		"http_proxy":                {},
-		"https_proxy":               {},
-		"no_proxy":                  {},
+		"APP_LOG_LEVEL":               {},
+		"DOCKERHUB_MIRROR":            {},
+		"HTTP_PROXY":                  {},
+		"HTTPS_PROXY":                 {},
+		"IMAGE_CLEAN_BEFORE_DAYS":     {},
+		"IMAGE_CLEAN_INTERVAL":        {},
+		"IMAGE_CLEAN_PROJECT":         {},
+		"IMAGE_CLEAN_TAG_RETAIN_NUMS": {},
+		"IMAGE_COPY_MODE":             {},
+		"IMAGE_PULL_QUEUE_SIZE":       {},
+		"IMAGE_PULL_TIMEOUT":          {},
+		"IMAGE_PULL_WORKERS":          {},
+		"IMAGE_REPULL_MIN_INTERVAL":   {},
+		"NO_PROXY":                    {},
+		"OTEL_TRACES_EXPORTER":        {},
+		"REGISTRY_AUTH_FILE":          {},
+		"REGISTRY_CONFIGURATION_PATH": {},
+		"http_proxy":                  {},
+		"https_proxy":                 {},
+		"no_proxy":                    {},
 	}
 	env := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {

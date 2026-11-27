@@ -13,18 +13,28 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-// usePuller swaps the package-level puller for the duration of a test.
-func usePuller(t *testing.T, syncFn func(context.Context, string, string) error) *pullPool {
+// newTestProxyServer builds a server with a deterministic pull pool so tests
+// never touch package-level state or the real registry.
+func newTestProxyServer(
+	t *testing.T,
+	opts Options,
+	mapping map[string]string,
+	syncFn func(context.Context, string, string) error,
+) *server {
 	t.Helper()
 
+	if opts.PullTimeout == 0 {
+		opts.PullTimeout = time.Minute
+	}
 	pool := newPullPool(t.Context(), 1, 0, cache.New(time.Minute, time.Minute), syncFn)
-	previous := imagePuller
-	imagePuller = pool
-	t.Cleanup(func() {
-		imagePuller = previous
-		pool.Close()
-	})
-	return pool
+	t.Cleanup(pool.Close)
+
+	return &server{
+		registryAddr: "127.0.0.1:5000",
+		options:      opts,
+		puller:       pool,
+		mapping:      mapping,
+	}
 }
 
 func newUpstream(t *testing.T, calls *int32) *httptest.Server {
@@ -40,16 +50,14 @@ func newUpstream(t *testing.T, calls *int32) *httptest.Server {
 const manifestPath = "http://registry.example/v2/team/nginx/manifests/latest"
 
 func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
-	t.Setenv(imageCopyModekey, "sync")
-
 	var upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
 
-	usePuller(t, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil, func(context.Context, string, string) error {
 		return errors.New("upstream registry unavailable")
 	})
 
-	proxyServer := httptest.NewTestServer(t, newProxyHandler("127.0.0.1:5000", upstream.Client().Transport))
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
 	resp, err := proxyServer.Client().Head(manifestPath)
 	if err != nil {
 		t.Fatalf("HEAD %s: %v", manifestPath, err)
@@ -68,25 +76,22 @@ func TestProxyPullFailureReturnsBadGateway(t *testing.T) {
 }
 
 func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
-	t.Setenv(imageCopyModekey, "sync")
-
-	previousTimeout := imagePullTimeout
-	imagePullTimeout = 30 * time.Millisecond
-	t.Cleanup(func() { imagePullTimeout = previousTimeout })
-
 	var upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	usePuller(t, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{
+		CopyMode:    CopyModeSync,
+		PullTimeout: 30 * time.Millisecond,
+	}, nil, func(context.Context, string, string) error {
 		<-release
 		return nil
 	})
 	// Cleanups run LIFO: unblock the pull before the pool is closed.
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
-	proxyServer := httptest.NewTestServer(t, newProxyHandler("127.0.0.1:5000", upstream.Client().Transport))
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
 	resp, err := proxyServer.Client().Head(manifestPath)
 	if err != nil {
 		t.Fatalf("HEAD %s: %v", manifestPath, err)
@@ -102,14 +107,12 @@ func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 }
 
 func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
-	t.Setenv(imageCopyModekey, "sync")
-
 	var syncCalls, upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
 
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	usePuller(t, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil, func(context.Context, string, string) error {
 		atomic.AddInt32(&syncCalls, 1)
 		<-release
 		return nil
@@ -118,7 +121,7 @@ func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 
 	const requests = 8
 	entered := make(chan struct{}, requests)
-	proxyHandler := newProxyHandler("127.0.0.1:5000", upstream.Client().Transport)
+	proxyHandler := srv.handler(upstream.Client().Transport)
 	proxyServer := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		entered <- struct{}{}
 		proxyHandler.ServeHTTP(w, r)
@@ -172,12 +175,10 @@ func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 // mode: the manifest request is proxied immediately while the copy runs in the
 // background.
 func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
-	t.Setenv(imageCopyModekey, "async")
-
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startOnce, releaseOnce sync.Once
-	usePuller(t, func(context.Context, string, string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeAsync}, nil, func(context.Context, string, string) error {
 		startOnce.Do(func() { close(started) })
 		<-release
 		return nil
@@ -188,7 +189,7 @@ func TestManifestDispatcherAsyncDoesNotBlockRequest(t *testing.T) {
 	req.Host = "registry.example"
 
 	dispatched := make(chan http.Handler, 1)
-	go func() { dispatched <- manifestDispatcherCustom("127.0.0.1:5000", req) }()
+	go func() { dispatched <- srv.manifestDispatcherCustom(req) }()
 
 	select {
 	case handler := <-dispatched:

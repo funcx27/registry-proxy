@@ -102,15 +102,15 @@ func TestManifestImage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(registryMirrorKey, tt.mirror)
-			previous := registryProxyMap
-			registryProxyMap = tt.mapping
-			t.Cleanup(func() { registryProxyMap = previous })
+			srv := &server{
+				options: Options{DockerHubMirror: tt.mirror},
+				mapping: tt.mapping,
+			}
 
 			r := httptest.NewRequest(tt.method, "http://"+tt.host+tt.path, nil)
 			r.Host = tt.host
 
-			got, ok := manifestImage(r)
+			got, ok := srv.manifestImage(r)
 			if ok != tt.wantOK || got != tt.want {
 				t.Fatalf("manifestImage() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.wantOK)
 			}
@@ -122,12 +122,9 @@ func TestManifestImage(t *testing.T) {
 // contract: the tag key and the child digest key are different cache and
 // singleflight entries, so both must trigger their own copy.
 func TestManifestDispatcherPullsTagAndDigestSeparately(t *testing.T) {
-	t.Setenv(imageCopyModekey, "sync")
-	t.Setenv(registryMirrorKey, "")
-
 	var mu sync.Mutex
 	var pulled []string
-	usePuller(t, func(_ context.Context, _, image string) error {
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil, func(_ context.Context, _, image string) error {
 		mu.Lock()
 		pulled = append(pulled, image)
 		mu.Unlock()
@@ -136,7 +133,7 @@ func TestManifestDispatcherPullsTagAndDigestSeparately(t *testing.T) {
 
 	var upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
-	proxyServer := httptest.NewTestServer(t, newProxyHandler("127.0.0.1:5000", upstream.Client().Transport))
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
 	client := proxyServer.Client()
 	baseURL := proxyServer.URL
 
@@ -179,12 +176,12 @@ func TestManifestDispatcherPullsTagAndDigestSeparately(t *testing.T) {
 // TestManifestImageIgnoresEmptyMirror guards the regression where an empty
 // DOCKERHUB_MIRROR replaced the request host with an empty string.
 func TestManifestImageIgnoresEmptyMirror(t *testing.T) {
-	t.Setenv(registryMirrorKey, "")
+	srv := &server{}
 
 	r := httptest.NewRequest(http.MethodGet, "http://docker.io/v2/library/alpine/manifests/3.20", nil)
 	r.Host = "docker.io"
 
-	got, ok := manifestImage(r)
+	got, ok := srv.manifestImage(r)
 	if !ok {
 		t.Fatal("manifestImage() ok = false, want true")
 	}

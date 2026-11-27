@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/regclient/regclient"
@@ -22,8 +21,8 @@ type imageCopier struct {
 	clients map[string]*regclient.RegClient
 }
 
-func newImageCopier() (*imageCopier, error) {
-	hosts, err := loadAuthHosts()
+func newImageCopier(authFile string) (*imageCopier, error) {
+	hosts, err := loadAuthHosts(authFile)
 	if err != nil {
 		return nil, err
 	}
@@ -35,11 +34,11 @@ func newImageCopier() (*imageCopier, error) {
 
 // loadAuthHosts keeps REGISTRY_AUTH_FILE compatibility with the existing Helm
 // chart while still supporting the standard Docker config locations.
-func loadAuthHosts() ([]config.Host, error) {
-	if path := os.Getenv("REGISTRY_AUTH_FILE"); path != "" {
-		hosts, err := config.DockerLoadFile(path)
+func loadAuthHosts(authFile string) ([]config.Host, error) {
+	if authFile != "" {
+		hosts, err := config.DockerLoadFile(authFile)
 		if err != nil {
-			return nil, fmt.Errorf("load REGISTRY_AUTH_FILE %q: %w", path, err)
+			return nil, fmt.Errorf("load REGISTRY_AUTH_FILE %q: %w", authFile, err)
 		}
 		return hosts, nil
 	}

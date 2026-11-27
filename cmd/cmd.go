@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	appconfig "registry-proxy/internal/config"
 	"registry-proxy/internal/logging"
 	"registry-proxy/pkg/proxy"
 	"registry-proxy/pkg/version"
@@ -25,7 +26,16 @@ var ServeCmd = &cobra.Command{
 		// setup context
 		type versionKey struct{}
 		ctx := context.WithValue(context.Background(), versionKey{}, version.Version)
-		config, err := resolveConfiguration(args)
+		appCfg, err := appconfig.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+			// nolint:errcheck
+			cmd.Usage()
+			os.Exit(1)
+		}
+		proxy.SetLogger(logging.NewAppLogger(appCfg.AppLogLevel))
+
+		config, err := resolveConfiguration(args, appCfg.RegistryConfigurationPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
 			// nolint:errcheck
@@ -70,7 +80,7 @@ var ServeCmd = &cobra.Command{
 
 		proxyErr := make(chan error, 1)
 		go func() {
-			proxyErr <- proxy.NewProxy(proxyAddr, registryAddr)
+			proxyErr <- proxy.NewProxy(proxyAddr, registryAddr, appCfg.Proxy)
 		}()
 
 		registryErr := make(chan error, 1)
@@ -79,7 +89,7 @@ var ServeCmd = &cobra.Command{
 		}()
 
 		go func() {
-			if err := proxy.CleanImage(ctx, config, maintenanceGate); err != nil {
+			if err := proxy.CleanImage(ctx, config, maintenanceGate, appCfg.Proxy.Cleanup); err != nil {
 				logrus.Errorf("image cleanup stopped: %v", err)
 			}
 		}()
@@ -111,13 +121,10 @@ func pickLoopbackAddr() (string, error) {
 	return addr, nil
 }
 
-func resolveConfiguration(args []string) (*configuration.Configuration, error) {
-	var configurationPath string
-
+func resolveConfiguration(args []string, environmentPath string) (*configuration.Configuration, error) {
+	configurationPath := environmentPath
 	if len(args) > 0 {
 		configurationPath = args[0]
-	} else if os.Getenv("REGISTRY_CONFIGURATION_PATH") != "" {
-		configurationPath = os.Getenv("REGISTRY_CONFIGURATION_PATH")
 	}
 
 	if configurationPath == "" {
