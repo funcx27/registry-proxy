@@ -93,7 +93,9 @@ func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute)
 	switch s.options.CopyMode {
 	case CopyModeSync:
 		if err := s.imageHandler(r, route, image); err != nil {
-			logger.Errorf("%s pull image failed: %v", r.RemoteAddr, err)
+			// The pull worker already logs the failure with its source image and
+			// elapsed time. Avoid duplicating the same error here; this branch
+			// only translates it into an HTTP response.
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 				status := http.StatusBadGateway
@@ -109,9 +111,8 @@ func (s *server) manifestDispatcherCustom(r *http.Request, route *registryRoute)
 		// but detach cancellation from the client request.
 		asyncRequest := r.Clone(context.WithoutCancel(r.Context()))
 		go func() {
-			if err := s.imageHandler(asyncRequest, route, image); err != nil {
-				logger.Errorf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)
-			}
+			// Failures are logged once by the pull worker.
+			_ = s.imageHandler(asyncRequest, route, image)
 		}()
 	}
 	return nil

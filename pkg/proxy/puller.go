@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/patrickmn/go-cache"
+	"github.com/regclient/regclient/types/errs"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -182,7 +183,7 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 	begin := time.Now()
 	copyCtx := contextWithLoopChain(ctx, job.loopChain)
 	if err := p.copyFn(copyCtx, job.registryAddr, job.sourceImage, job.localTarget); err != nil {
-		logger.Errorf("pull image %s failed after %s: %v", job.sourceImage, time.Since(begin), err)
+		logPullFailure(job.sourceImage, time.Since(begin), err)
 		return fmt.Errorf("pull image %s: %w", job.sourceImage, err)
 	}
 
@@ -199,6 +200,17 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 		logger.Infof("pulled image: %s in %s", job.sourceImage, time.Since(begin))
 	}
 	return nil
+}
+
+// logPullFailure records one line per failed pull. Expected upstream misses
+// are warnings with a "not found" message; transport failures, timeouts, and
+// registry 5xx responses remain errors.
+func logPullFailure(image string, elapsed time.Duration, err error) {
+	if errors.Is(err, errs.ErrNotFound) {
+		logger.Warnf("pull image %s not found after %s: %v", image, elapsed, err)
+		return
+	}
+	logger.Errorf("pull image %s failed after %s: %v", image, elapsed, err)
 }
 
 // isDigestReference reports whether image is pinned by digest (name@sha256:...)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/patrickmn/go-cache"
+	"github.com/regclient/regclient/types/errs"
+	"github.com/sirupsen/logrus"
 )
 
 func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
@@ -66,6 +69,72 @@ func TestPullPoolCoalescesConcurrentPulls(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("sync calls = %d, want 1", got)
 	}
+}
+
+func TestPullPoolFailureLogLevel(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantLevel   logrus.Level
+		wantMessage string
+	}{
+		{
+			name:        "upstream not found warns",
+			err:         fmt.Errorf("get manifest: %w", errs.ErrNotFound),
+			wantLevel:   logrus.WarnLevel,
+			wantMessage: "not found after",
+		},
+		{
+			name:        "transport failure stays an error",
+			err:         errors.New("dial tcp: connection refused"),
+			wantLevel:   logrus.ErrorLevel,
+			wantMessage: "failed after",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := logger
+			t.Cleanup(func() { logger = previous })
+
+			appLogger := logrus.New()
+			appLogger.SetOutput(io.Discard)
+			recorder := &levelRecorder{}
+			appLogger.AddHook(recorder)
+			logger = appLogger
+
+			pool := newPullPool(context.Background(), 1, 0, nil, func(context.Context, string, string, string) error {
+				return tt.err
+			})
+			t.Cleanup(pool.Close)
+
+			if err := pool.ensure(context.Background(), "127.0.0.1:5000", "docker.io/library/nginx:latest", "docker.io/library/nginx:latest"); err == nil {
+				t.Fatal("ensure() error = nil, want failure")
+			}
+			if len(recorder.entries) != 1 {
+				t.Fatalf("log entries = %d, want exactly 1", len(recorder.entries))
+			}
+			entry := recorder.entries[0]
+			if entry.Level != tt.wantLevel {
+				t.Fatalf("log level = %s, want %s", entry.Level, tt.wantLevel)
+			}
+			if !strings.Contains(entry.Message, tt.wantMessage) {
+				t.Fatalf("log message = %q, want it to contain %q", entry.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+type levelRecorder struct {
+	entries []*logrus.Entry
+}
+
+func (r *levelRecorder) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (r *levelRecorder) Fire(entry *logrus.Entry) error {
+	r.entries = append(r.entries, entry)
+	return nil
 }
 
 func TestPullPoolRetriesAfterFailure(t *testing.T) {
