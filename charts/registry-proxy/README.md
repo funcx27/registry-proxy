@@ -81,8 +81,71 @@ env:
 
 ```bash
 kubectl port-forward -n registry-proxy svc/registry-proxy 5000:80
-docker pull 127.0.0.1:5000/library/nginx:latest
+curl http://127.0.0.1:5000/v2/
 ```
+
+## Plain HTTP and the 443 fallback
+
+registry-proxy serves plain HTTP on the main Service port, which defaults to
+80. The Service always also exposes port 443 to the same plain-HTTP backend.
+This is not a TLS endpoint. It exists because containerd and nerdctl probe
+HTTPS first when `--insecure-registry` is set:
+
+- Against a ClusterIP Service without a 443 port, the SYN is dropped and the
+  probe blocks for about 30 seconds.
+- nerdctl only retries over HTTP for `ErrSchemeMismatch` or
+  `connection refused`; a dial timeout does not trigger the fallback.
+- Mapping 443 to the plain-HTTP backend returns a fast plaintext response,
+  which the client maps to `ErrSchemeMismatch` and immediately retries on the
+  main HTTP port.
+
+Typical client usage:
+
+```bash
+nerdctl --insecure-registry pull registry.example.com/dockerhub/alpine/socat:latest
+```
+
+The `--insecure-registry` flag is still required: it skips TLS verification and
+allows the HTTP fallback. This chart does not terminate TLS. To expose the
+registry over HTTPS, terminate TLS at an Ingress or L7 load balancer and
+forward plain HTTP to the Service's main port.
+
+### Ingress
+
+Ingress uses `service.port` (80 by default). If `ingress.tls` is configured, the
+Ingress controller terminates HTTPS and forwards HTTP to the Service. The 443
+fallback port is not involved in Ingress traffic.
+
+### Kubernetes and kubelet pulls
+
+The 443 fallback is a nerdctl compatibility behavior. containerd's CRI plugin
+does not use nerdctl's fallback logic, so kubelet image pulls need node-side
+configuration. Either terminate real TLS in front of the registry and configure
+containerd with a CA or skip-verify `hosts.toml`, or keep HTTP and configure a
+`certs.d` `hosts.toml` with `server = "http://<registry-host>"` plus
+`config_path` in containerd's CRI registry settings. That is node bootstrap
+configuration and is intentionally not managed by this chart.
+
+Do not expose this plain-HTTP Service directly to an untrusted network.
+
+## Logging
+
+All logs share one format, regardless of which component writes them:
+
+```text
+time="2026-11-27 09:45:06" level=info msg="pulled image: ..."
+```
+
+`env.logLevel` (default `error`) controls distribution's internal registry
+logger. `env.appLogLevel` (default `info`) controls registry-proxy's own
+logger, which records normal pull progress and cleanup events. Expected
+existence checks performed by regclient during a copy (404 responses for
+manifests and blobs that are not cached yet) are filtered, because they are a
+normal part of the copy protocol, not failures. A pull by tag also copies the
+referenced index and child manifests by digest; those internal copies are
+logged at `debug` so one client pull produces one completion line. Set
+`appLogLevel=debug` to see every copy, or `appLogLevel=error` to keep only
+failures.
 
 ## Upstream registry credentials
 
@@ -351,15 +414,17 @@ imageClean:
 | `image.repository` | `ghcr.io/funcx27/registry-proxy` | Chart container image. |
 | `image.tag` | `Chart.appVersion` | Image tag. |
 | `image.digest` | `""` | Image digest; takes precedence over tag. |
+| `enableServiceLinks` | `false` | Inject Service environment variables into the registry pod. |
 | `service.type` | `ClusterIP` | Service type. |
 | `service.clusterIP` | `""` | Optional fixed ClusterIP; immutable after creation. |
 | `persistence.type` | `hostPath` | `hostPath`, `pvc`, or `emptyDir`. |
 | `persistence.hostPath.path` | `/var/lib/registry-proxy` | Host directory backing `/var/lib/registry`. |
-| `service.port` | `80` | Service port. |
+| `service.port` | `80` | Main plain-HTTP Service port. Port 443 is always added as a fallback to the same backend and cannot be used here. |
 | `ingress.enabled` | `false` | Enable an Ingress. |
 | `upstreamAuth.existingSecret` | `""` | Existing Docker config JSON Secret. |
 | `upstreamAuth.dockerconfigjson` | `""` | Raw JSON supplied with `--set-file`. |
-| `env.logLevel` | `error` | `REGISTRY_LOG_LEVEL`. |
+| `env.logLevel` | `error` | `REGISTRY_LOG_LEVEL`, distribution's internal logger. |
+| `env.appLogLevel` | `info` | `APP_LOG_LEVEL`, registry-proxy's own logger. |
 | `env.dockerHubMirror` | `""` | `DOCKERHUB_MIRROR`. |
 | `env.imageCopyMode` | `sync` | `sync` or `async`. |
 | `env.imagePullTimeout` | `5m` | Pull timeout. |

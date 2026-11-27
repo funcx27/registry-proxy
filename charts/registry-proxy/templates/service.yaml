@@ -1,3 +1,6 @@
+{{- if eq (int .Values.service.port) 443 -}}
+{{- fail "service.port must not be 443: port 443 is reserved for the plain-HTTP fallback" -}}
+{{- end -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,6 +19,13 @@ spec:
   ports:
     - name: http
       port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    # containerd and nerdctl probe HTTPS before falling back to HTTP. Mapping
+    # 443 to the same plain-HTTP backend makes that probe fail fast with
+    # ErrSchemeMismatch instead of timing out on a ClusterIP without 443.
+    - name: http-fallback
+      port: 443
       targetPort: http
       protocol: TCP
   selector:

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,7 +112,7 @@ func (p *pullPool) ensure(ctx context.Context, registryAddr, image string) error
 		if err := p.enqueue(ctx, job); err != nil {
 			return nil, err
 		}
-		log.Printf("pulling image: %s", image)
+		logger.Debugf("pulling image: %s", image)
 
 		// Once the job is queued, keep the flight alive until the worker
 		// finishes. A timed-out caller exits independently, but later callers
@@ -174,15 +174,29 @@ func (p *pullPool) pull(ctx context.Context, job imagePullJob) (err error) {
 
 	begin := time.Now()
 	if err := p.copyFn(ctx, job.registryAddr, job.image); err != nil {
-		log.Printf("pull image %s failed after %s: %v", job.image, time.Since(begin), err)
+		logger.Errorf("pull image %s failed after %s: %v", job.image, time.Since(begin), err)
 		return fmt.Errorf("pull image %s: %w", job.image, err)
 	}
 
 	if p.cache != nil {
 		p.cache.SetDefault(job.image, struct{}{})
 	}
-	log.Printf("pulled image: %s in %s", job.image, time.Since(begin))
+	// A single user-facing pull fans out into additional copies of the
+	// digest references referenced by the tag (index and child manifests).
+	// Those are an implementation detail, so only the tag-level completion
+	// stays at info level.
+	if isDigestReference(job.image) {
+		logger.Debugf("pulled image: %s in %s", job.image, time.Since(begin))
+	} else {
+		logger.Infof("pulled image: %s in %s", job.image, time.Since(begin))
+	}
 	return nil
+}
+
+// isDigestReference reports whether image is pinned by digest (name@sha256:...)
+// rather than resolved by tag.
+func isDigestReference(image string) bool {
+	return strings.Contains(image, "@")
 }
 
 func (p *pullPool) isPulled(image string) bool {

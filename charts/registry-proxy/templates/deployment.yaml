@@ -45,6 +45,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "registry-proxy.serviceAccountName" . }}
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -68,6 +69,8 @@ spec:
           env:
             - name: TZ
               value: {{ .Values.env.timezone | quote }}
+            - name: APP_LOG_LEVEL
+              value: {{ .Values.env.appLogLevel | quote }}
             - name: REGISTRY_LOG_LEVEL
               value: {{ .Values.env.logLevel | quote }}
             - name: IMAGE_COPY_MODE

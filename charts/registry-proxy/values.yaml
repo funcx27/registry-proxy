@@ -24,6 +24,11 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# Kubernetes injects <SERVICE>_HOST and <SERVICE>_PORT variables for every
+# Service in the namespace when this is true. Disable it to keep the registry
+# pod environment small and to avoid collisions with upstream variables.
+enableServiceLinks: false
+
 podAnnotations: {}
 podLabels: {}
 
@@ -43,6 +48,8 @@ service:
   # clusterIP is immutable after the Service is created; changing it requires
   # deleting and recreating the Service.
   clusterIP: ""
+  # Main plain-HTTP port. The chart always also exposes port 443 on the same
+  # HTTP backend so clients that probe HTTPS first fail fast and retry over HTTP.
   port: 80
   annotations: {}
 
@@ -152,7 +159,10 @@ imageClean:
 
 env:
   timezone: Asia/Shanghai
+  # Level of distribution's internal registry logger.
   logLevel: error
+  # Level of registry-proxy's own logger (pull progress, cleanup, ...).
+  appLogLevel: info
   dockerHubMirror: ""
   imageCopyMode: sync
   imagePullTimeout: 5m

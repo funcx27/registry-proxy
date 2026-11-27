@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -57,7 +56,7 @@ func init() {
 	}
 	copier, err := newImageCopier()
 	if err != nil {
-		log.Fatalf("initialize image copier: %v", err)
+		logger.Fatalf("initialize image copier: %v", err)
 	}
 	// Request waits may time out after a job is queued. Bound the copy itself
 	// as well, otherwise a stuck upstream can occupy a worker indefinitely.
@@ -69,34 +68,32 @@ func init() {
 	imagePuller = newPullPool(context.Background(), pullWorkers, pullQueueSize, imageCache, copyWithTimeout)
 	trimmedProjects := strings.TrimFunc(getEnv(imageCleanProjectKey), unicode.IsSpace)
 	projects = strings.Split(trimmedProjects, ",")
-	log.Printf("image re-pull min interval: %s\n", rePullInterval)
-	log.Printf("image pull timeout: %s\n", imagePullTimeout)
-	log.Printf("image pull workers: %d, queue size: %d\n", pullWorkers, pullQueueSize)
-	log.Printf("image copy mode: %s\n", getEnv(imageCopyModekey))
-	log.Printf("dockerhub mirror: %s\n", getEnv(registryMirrorKey))
+	logger.Infof("image re-pull min interval: %s", rePullInterval)
+	logger.Infof("image pull timeout: %s", imagePullTimeout)
+	logger.Infof("image pull workers: %d, queue size: %d", pullWorkers, pullQueueSize)
+	logger.Infof("image copy mode: %s", getEnv(imageCopyModekey))
+	logger.Infof("dockerhub mirror: %s", getEnv(registryMirrorKey))
 	const proxyMappingPath = "/var/lib/registry/proxy-mapping.yaml"
 	if b, err := os.ReadFile(proxyMappingPath); err == nil {
 		if err := yaml.Unmarshal(b, &registryProxyMap); err != nil {
-			log.Printf("parse %s: %v", proxyMappingPath, err)
+			logger.Warnf("parse %s: %v", proxyMappingPath, err)
 		}
 	}
 	if len(registryProxyMap) > 0 {
-		s := "registry proxy host mapping: "
 		for k, v := range registryProxyMap {
-			s += fmt.Sprintf("%s -> %s\n", k, v)
+			logger.Infof("registry proxy host mapping: %s -> %s", k, v)
 		}
-		log.Println(s)
 	}
 	if getEnv(imageCleanTagRetainNumsKey) != "" {
 		days, err := strconv.ParseInt(getEnv(imageCleanBeforeDaysKey), 10, 64)
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatalf("parse %s: %v", imageCleanBeforeDaysKey, err)
 		}
 		imageCleanBefore = 24 * time.Hour * time.Duration(days)
-		log.Printf("image clean interval: %s\n", getEnv(imageCleanJobIntervalKey))
-		log.Printf("image clean project: %s\n", projects)
-		log.Printf("image clean before: %s\n", imageCleanBefore)
-		log.Printf("image clean retain tag nums: %s\n", getEnv(imageCleanTagRetainNumsKey))
+		logger.Infof("image clean interval: %s", getEnv(imageCleanJobIntervalKey))
+		logger.Infof("image clean project: %s", projects)
+		logger.Infof("image clean before: %s", imageCleanBefore)
+		logger.Infof("image clean retain tag nums: %s", getEnv(imageCleanTagRetainNumsKey))
 	}
 }
 
@@ -125,9 +122,9 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 
 	cleanJob := func() error {
 		return gate.RunExclusive(ctx, func() error {
-			log.Println("image clean maintenance window started")
-			defer log.Println("image clean maintenance window ended")
-			log.Println("image clean job started")
+			logger.Info("image clean maintenance window started")
+			defer logger.Info("image clean maintenance window ended")
+			logger.Info("image clean job started")
 			var deletedPaths []string
 			for _, project := range projects {
 				deletes, err := deleteImageTagPath(config, project, imageTagRetainNums, imageCleanBefore, false)
@@ -140,21 +137,21 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 				deletedPaths = append(deletedPaths, deletes...)
 			}
 			if len(deletedPaths) == 0 {
-				log.Println("no images to clean")
+				logger.Info("no images to clean")
 				return nil
 			}
 
-			log.Printf("image tags deleted: %d", len(deletedPaths))
+			logger.Infof("image tags deleted: %d", len(deletedPaths))
 			if err := gc.Run(ctx, *config); err != nil {
 				return err
 			}
-			log.Printf("image cleaned nums: %d", len(deletedPaths))
+			logger.Infof("image cleaned nums: %d", len(deletedPaths))
 			return nil
 		})
 	}
 
 	if err := cleanJob(); err != nil {
-		log.Printf("image clean job failed: %v", err)
+		logger.Errorf("image clean job failed: %v", err)
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -164,7 +161,7 @@ func CleanImage(ctx context.Context, config *configuration.Configuration, gate *
 			return ctx.Err()
 		case <-ticker.C:
 			if err := cleanJob(); err != nil {
-				log.Printf("image clean job failed: %v", err)
+				logger.Errorf("image clean job failed: %v", err)
 			}
 		}
 	}
@@ -174,7 +171,7 @@ func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler
 	switch getEnv(imageCopyModekey) {
 	case "sync":
 		if err := imageHandler(r, registryAddr); err != nil {
-			log.Printf("%s pull image failed: %v", r.RemoteAddr, err)
+			logger.Errorf("%s pull image failed: %v", r.RemoteAddr, err)
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 				status := http.StatusBadGateway
@@ -190,7 +187,7 @@ func manifestDispatcherCustom(registryAddr string, r *http.Request) http.Handler
 		asyncRequest := r.Clone(context.Background())
 		go func() {
 			if err := imageHandler(asyncRequest, registryAddr); err != nil {
-				log.Printf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)
+				logger.Errorf("%s async pull image failed: %v", asyncRequest.RemoteAddr, err)
 			}
 		}()
 	}
@@ -307,7 +304,7 @@ func deleteImageTagPath(config *configuration.Configuration, project string, ret
 	for _, tagFilePath := range preDeletePath {
 		image := strings.TrimPrefix(tagFilePath, reposPath+"/")
 		image = strings.Replace(image, "_manifests/tags/", "", 1)
-		log.Printf("deleting tag: %s \n", image)
+		logger.Infof("deleting tag: %s", image)
 	}
 	if dryRun {
 		return
@@ -339,7 +336,7 @@ func getEnv(key string) string {
 func envInt(envKey string, fallback int) int {
 	value, err := strconv.Atoi(getEnv(envKey))
 	if err != nil {
-		log.Printf("%s value error: %v, using %d", envKey, err, fallback)
+		logger.Warnf("%s value error: %v, using %d", envKey, err, fallback)
 		return fallback
 	}
 	return value
@@ -348,7 +345,7 @@ func envInt(envKey string, fallback int) int {
 func envStrToDuration(envKey string) time.Duration {
 	duration, err := time.ParseDuration(getEnv(envKey))
 	if err != nil {
-		log.Println(envKey + "value error")
+		logger.Errorf("%s value error", envKey)
 		panic(err)
 	}
 	return duration

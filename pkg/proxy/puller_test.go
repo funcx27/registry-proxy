@@ -344,3 +344,19 @@ func TestPullPoolCloseDoesNotStrandCallers(t *testing.T) {
 		pool.Close() // idempotent
 	}
 }
+
+func TestIsDigestReference(t *testing.T) {
+	tests := []struct {
+		image string
+		want  bool
+	}{
+		{"registry.example.com/dockerhub/alpine/socat:latest", false},
+		{"127.0.0.1:5000/library/nginx", false},
+		{"registry.example.com/dockerhub/alpine/socat@sha256:" + strings.Repeat("a", 64), true},
+	}
+	for _, tt := range tests {
+		if got := isDigestReference(tt.image); got != tt.want {
+			t.Errorf("isDigestReference(%q) = %v, want %v", tt.image, got, tt.want)
+		}
+	}
+}

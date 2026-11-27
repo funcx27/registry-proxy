@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"registry-proxy/internal/logging"
 	"registry-proxy/pkg/proxy"
 	"registry-proxy/pkg/version"
 
@@ -42,6 +43,10 @@ var ServeCmd = &cobra.Command{
 		}
 		config.HTTP.Net = "tcp"
 		config.HTTP.Addr = registryAddr
+		// The proxy always talks to the internal registry over plain HTTP.
+		// Clear any distribution TLS settings so the loopback listener cannot
+		// accidentally require TLS.
+		config.HTTP.TLS = configuration.TLS{}
 		logrus.Infof("proxy listening on %s, internal registry on %s", proxyAddr, registryAddr)
 
 		// Distribution's maintenance.readonly setting is read when the app is
@@ -56,6 +61,11 @@ var ServeCmd = &cobra.Command{
 		if err != nil {
 			logrus.Fatalln(err)
 		}
+		// NewRegistry configures the global logrus logger from the
+		// distribution configuration; reshape it afterwards so registry and
+		// application logs share one format and expected regclient misses are
+		// not reported as errors.
+		logging.PrepareRegistryLogger()
 		configureDebugServer(config)
 
 		proxyErr := make(chan error, 1)

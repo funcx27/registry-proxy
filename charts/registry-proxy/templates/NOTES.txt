@@ -10,6 +10,11 @@ Port-forward the API for local checks:
   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "registry-proxy.fullname" . }} 5000:{{ .Values.service.port }}
   curl http://127.0.0.1:5000/v2/
 
+The Service also exposes port 443 to the same plain-HTTP backend. This is not
+a TLS endpoint: it lets clients that probe HTTPS first fail fast and retry over
+HTTP. Ingress uses the HTTP service port above; optional Ingress TLS is
+terminated by the Ingress controller.
+
 {{- if eq .Values.persistence.type "hostPath" }}
 Registry data is stored on the node at:
   {{ .Values.persistence.hostPath.path }}
