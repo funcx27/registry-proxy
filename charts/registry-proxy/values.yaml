@@ -149,14 +149,25 @@ upstreamAuth:
 #   host:  Host: ghcr.io + /v2/org/app/manifests/v1
 #   ns:    /v2/org/app/manifests/v1?ns=ghcr.io
 #
+# Host mode also works without a mapping when the Host header is a DNS name:
+# the Host becomes the upstream registry. IP addresses and single-label hosts
+# stay local, so use one of those (not the fully qualified Service name) for
+# direct access to the local registry.
+#
 # Domain keys use registry semantics: /v2/docker.io/alpine is copied from
 # docker.io/library/alpine. Namespace keys preserve the upstream path:
 # /v2/dockerhub/alpine/socat is copied from <registry>/dockerhub/alpine/socat.
 # Set preservePath explicitly to override that default.
 #
-# A Host mapping wins over a namespace mapping with the same first path
-# component. An explicit registry domain in the first path component still
-# takes precedence over the Host header.
+# For a domain key, registry may include a repository prefix. The key's first
+# path component is stripped before the prefix is applied, so
+# ghcr.io: {registry: upstream.example.com/ghcr.io} copies /v2/ghcr.io/org/app
+# from upstream.example.com/ghcr.io/org/app.
+#
+# Routing precedence: a registry domain in the first path component, an
+# explicit Host mapping, an explicit first-component mapping, ?ns=, the
+# automatic Host fallback, then a plain local request. A Host mapping wins over
+# a namespace mapping with the same first path component.
 #
 # docker.io uses the conventional "library" namespace for single-component
 # repositories such as docker.io/alpine.

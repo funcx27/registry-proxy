@@ -46,12 +46,20 @@ repository, so path-mode and host-mode clients share one cache:
 | ns | `/v2/org/app/manifests/v1?ns=ghcr.io` | `ghcr.io/org/app` |
 
 Path mode needs no configuration for public domains: the first path segment is
-treated as the upstream registry when it is a valid DNS name. Host mode suits
-clients that resolve an upstream hostname (for example through `/etc/hosts`) to
-the proxy. Namespace mode is a fallback for runtimes that can rewrite neither
-the Host header nor the path. Host and ns modes require an entry in
-`config.registryMapping`; restricting them to configured names keeps the proxy's
-own Service hostname from being mistaken for an upstream registry.
+treated as the upstream registry when it is a valid DNS name. Host mode also
+needs no configuration: when the first path component is not a registry domain,
+a DNS Host header is treated as the upstream registry, so clients can point an
+upstream name (for example through `/etc/hosts`) at the proxy. Namespace mode is
+a fallback for runtimes that can rewrite neither the Host header nor the path.
+Mapping entries remain optional overrides for the upstream address, Docker Hub's
+`library` namespace, or a repository namespace.
+
+IP addresses and single-label hostnames (for example `registry-proxy`) are not
+treated as upstream registries, so they can still address the local registry
+directly. Because every DNS Host header is an upstream candidate, do not use the
+proxy's fully qualified Service name for direct local-registry access: it would
+be routed to itself and rejected by the proxy loop detector with `508`. Use the
+Service name without the cluster search domain, or an IP address, instead.
 
 `config.registryMapping` also selects the upstream address and Docker Hub's
 conventional `library` namespace:
@@ -87,9 +95,18 @@ or `preservePath: true` on a domain mapping to keep it. This makes it possible t
 chain through another proxy without conflating a namespace such as `dockerhub`
 with the `docker.io` registry.
 
-When both a Host mapping and a namespace mapping match, the Host mapping wins.
-An explicit registry domain in the first path component still takes precedence
-over the Host header, so `/v2/docker.io/...` is always treated as Docker Hub.
+For a domain key, `registry` may include a repository prefix. The key's first
+path component is stripped before the prefix is applied, so
+`ghcr.io: {registry: upstream.example.com/ghcr.io}` copies
+`/v2/ghcr.io/org/app` from `upstream.example.com/ghcr.io/org/app` and stores it
+locally as `ghcr.io/org/app`. Keep `preservePath` unset or false for this form.
+
+Routing precedence is: a registry domain in the first path component, an
+explicit Host mapping, an explicit first-component mapping, `?ns=`, the
+automatic Host fallback, and finally a plain local request. When both a Host
+mapping and a namespace mapping match, the Host mapping wins. An explicit
+registry domain in the first path component still takes precedence over the
+Host header, so `/v2/docker.io/...` is always treated as Docker Hub.
 
 ### Proxy loop detection
 
@@ -128,8 +145,10 @@ override_path = true
 
 ### containerd host mode
 
-The client sends `Host: ghcr.io` and `/v2/org/app/...` to the proxy. It needs a
-mapping entry for `ghcr.io` and the proxy must be reachable under that name:
+The client sends `Host: ghcr.io` and `/v2/org/app/...` to the proxy. No mapping
+is required when the Host is a DNS name; an optional mapping can override the
+upstream registry or default namespace. The proxy must be reachable under that
+name:
 
 ```toml
 # /etc/containerd/certs.d/ghcr.io/hosts.toml

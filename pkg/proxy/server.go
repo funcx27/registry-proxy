@@ -43,6 +43,7 @@ func newServer(registryAddr string, opts Options) (*server, error) {
 		mappings:     mappings,
 	}
 	logger.Debugf("proxy instance ID: %s", instanceID)
+	logger.Debugf("host mode: DNS Host headers are treated as upstream registries when no mapping matches")
 
 	if opts.CopyMode == CopyModeOff {
 		// Native registry mode: routing normalization stays active, but no

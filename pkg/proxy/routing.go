@@ -60,6 +60,12 @@ func (rt registryRoute) sourceImage() (string, bool) {
 // resolveRoute maps a request to a registry route. A nil route means the
 // request is a plain local-registry request and must be forwarded untouched.
 // A non-nil error means the client supplied an invalid namespace selector.
+//
+// The routing priority is: a registry-shaped first path component, an explicit
+// Host mapping, an explicit first-component mapping, ?ns=, an automatic host
+// fallback for DNS Host headers, and finally a plain local request. The
+// automatic fallback keeps Host/ns-style clients working without a mapping
+// entry while IP and single-label hosts remain local.
 func (s *server) resolveRoute(r *http.Request) (*registryRoute, error) {
 	repository, endpoint, reference, suffix, ok := splitRegistryPath(r.URL.Path)
 	if !ok {
@@ -101,6 +107,14 @@ func (s *server) resolveRoute(r *http.Request) (*registryRoute, error) {
 			return nil, fmt.Errorf("unknown namespace %q", ns)
 		}
 		mode = routeModeNamespace
+	case isRegistryDomain(host):
+		// Hosts.toml style without a mapping: the client resolves an upstream
+		// registry name to the proxy and keeps that name in the Host header.
+		// Use the host itself as the upstream registry. Explicit mappings above
+		// still override the upstream and namespace defaults. IP and
+		// single-label hosts stay local so the proxy can be addressed directly.
+		registry = hostWithoutPort(host)
+		mode = routeModeHost
 	default:
 		return nil, nil
 	}

@@ -123,6 +123,51 @@ func TestProxyPullTimeoutReturnsGatewayTimeout(t *testing.T) {
 	}
 }
 
+// TestHostModeWithoutMappingPullsFromHost pins that a DNS Host header selects
+// its own upstream registry even when no mapping entry exists.
+func TestHostModeWithoutMappingPullsFromHost(t *testing.T) {
+	var upstreamCalls int32
+	var gotPath string
+	upstream := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	pulled := make(chan string, 1)
+	srv := newTestProxyServer(t, Options{CopyMode: CopyModeSync}, nil,
+		func(_ context.Context, _ string, source, local string) error {
+			pulled <- source + " -> " + local
+			return nil
+		})
+	proxyServer := httptest.NewTestServer(t, srv.handler(upstream.Client().Transport))
+	client := proxyServer.Client()
+
+	req, err := http.NewRequest(http.MethodHead, proxyServer.URL+manifestProxyPath, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "ghcr.io"
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	gotPull := <-pulled
+	if want := "ghcr.io/org/app:latest -> ghcr.io/org/app:latest"; gotPull != want {
+		t.Fatalf("pull = %q, want %q", gotPull, want)
+	}
+	if want := "/v2/ghcr.io/org/app/manifests/latest"; gotPath != want {
+		t.Fatalf("upstream path = %q, want %q", gotPath, want)
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
 func TestProxyConcurrentManifestRequestsPullOnce(t *testing.T) {
 	var syncCalls, upstreamCalls int32
 	upstream := newUpstream(t, &upstreamCalls)
